@@ -1,0 +1,526 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{.Title}}</title>
+  <style>
+    [hidden] { display:none !important; }
+    :root {
+      --bg:#eef3f7;
+      --ink:#102235;
+      --muted:#4d6478;
+      --card:#ffffff;
+      --line:#d6e1ea;
+      --brand:#0f7a67;
+      --brand-ink:#f2fffb;
+      --accent:#f4a259;
+      --danger:#b43636;
+      --shadow:0 20px 50px rgba(16,34,53,.14);
+    }
+    * { box-sizing:border-box; }
+    body {
+      margin:0;
+      color:var(--ink);
+      font-family:"Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+      background:
+        radial-gradient(1100px 620px at 10% -10%, #cde4f3 0%, transparent 60%),
+        radial-gradient(1000px 620px at 100% 110%, #f9dfc5 0%, transparent 55%),
+        var(--bg);
+      min-height:100vh;
+    }
+    .page {
+      min-height:100vh;
+      display:grid;
+      grid-template-columns:minmax(300px, 1.1fr) minmax(380px, 1.3fr);
+      gap:20px;
+      padding:28px;
+      align-items:stretch;
+    }
+    .hero {
+      background:linear-gradient(155deg, #0f7a67 0%, #0d5a7e 55%, #15415f 100%);
+      color:#ecfffb;
+      border-radius:18px;
+      padding:28px;
+      box-shadow:var(--shadow);
+      display:flex;
+      flex-direction:column;
+      justify-content:space-between;
+      overflow:hidden;
+      position:relative;
+    }
+    .hero::after {
+      content:"";
+      position:absolute;
+      width:280px;
+      height:280px;
+      right:-90px;
+      bottom:-90px;
+      border-radius:50%;
+      background:rgba(255,255,255,.14);
+    }
+    .hero h1 {
+      margin:0;
+      font-size:34px;
+      line-height:1.05;
+      letter-spacing:.01em;
+      font-weight:800;
+    }
+    .hero p {
+      margin:10px 0 0;
+      color:#d9f5ef;
+      max-width:38ch;
+      line-height:1.45;
+      font-size:15px;
+    }
+    .hero-notes {
+      margin-top:24px;
+      display:grid;
+      gap:10px;
+      z-index:1;
+    }
+    .hero-note {
+      background:rgba(255,255,255,.14);
+      border:1px solid rgba(255,255,255,.23);
+      border-radius:10px;
+      padding:10px 12px;
+      font-size:13px;
+      line-height:1.35;
+      color:#edfffb;
+      backdrop-filter: blur(2px);
+    }
+    .panel {
+      border-radius:18px;
+      background:var(--card);
+      border:1px solid var(--line);
+      box-shadow:var(--shadow);
+      padding:18px;
+      display:flex;
+      flex-direction:column;
+      min-height:0;
+      gap:12px;
+    }
+    .heading {
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+    }
+    .heading h2 {
+      margin:0;
+      font-size:24px;
+      font-weight:800;
+      letter-spacing:.01em;
+    }
+    .tag {
+      border-radius:999px;
+      border:1px solid #bcd6cc;
+      color:#0c6454;
+      background:#e9faf5;
+      padding:4px 10px;
+      font-size:12px;
+      font-weight:700;
+      text-transform:uppercase;
+      letter-spacing:.05em;
+    }
+    .sub {
+      margin:0;
+      color:var(--muted);
+      font-size:14px;
+      line-height:1.4;
+    }
+    .error {
+      color:var(--danger);
+      font-size:13px;
+      min-height:18px;
+      font-weight:600;
+    }
+    .list {
+      border:1px solid var(--line);
+      border-radius:12px;
+      background:#f9fbfd;
+      padding:8px;
+      min-height:160px;
+      max-height:36vh;
+      overflow:auto;
+    }
+    .setup-id-row {
+      width:100%;
+      text-align:left;
+      margin:0 0 8px;
+      padding:11px 12px;
+      background:#fff;
+      color:var(--ink);
+      border:1px solid #d9e4ec;
+      border-radius:10px;
+      cursor:pointer;
+      transition: border-color .12s ease, transform .12s ease, box-shadow .12s ease;
+    }
+    .setup-id-row:hover { transform:translateY(-1px); box-shadow:0 5px 14px rgba(16,34,53,.08); }
+    .setup-id-row:last-child { margin-bottom:0; }
+    .setup-id-row.active {
+      border-color:#0f7a67;
+      box-shadow:0 0 0 2px rgba(15,122,103,.17);
+      background:#f0fcf9;
+    }
+    .setup-id-meta {
+      display:block;
+      color:#556c7f;
+      font-size:12px;
+      margin-top:3px;
+      overflow-wrap:anywhere;
+      word-break:break-word;
+      line-height:1.35;
+    }
+    .btn-row {
+      display:grid;
+      grid-template-columns:1fr 1fr;
+      gap:10px;
+    }
+    .input, .btn {
+      width:100%;
+      border-radius:10px;
+      border:1px solid #cad8e4;
+      font-size:14px;
+      padding:10px 11px;
+    }
+    .input {
+      background:#fff;
+      color:var(--ink);
+      outline:none;
+    }
+    .input:focus {
+      border-color:#2e7db8;
+      box-shadow:0 0 0 3px rgba(46,125,184,.16);
+    }
+    .btn {
+      font-weight:700;
+      cursor:pointer;
+      transition:transform .12s ease, filter .12s ease;
+    }
+    .btn:hover { transform:translateY(-1px); }
+    .btn:active { transform:translateY(0); }
+    .btn-primary {
+      border-color:#0f7a67;
+      background:#0f7a67;
+      color:var(--brand-ink);
+    }
+    .btn-secondary {
+      border-color:#2e7db8;
+      background:#2e7db8;
+      color:#f3f9ff;
+    }
+    .btn-warm {
+      border-color:#d88536;
+      background:#f4a259;
+      color:#35250f;
+    }
+    .section {
+      border-top:1px solid var(--line);
+      padding-top:12px;
+      display:grid;
+      gap:8px;
+    }
+    .section h3 {
+      margin:0;
+      font-size:13px;
+      color:#385065;
+      letter-spacing:.03em;
+      text-transform:uppercase;
+    }
+    .overlay {
+      position:fixed;
+      inset:0;
+      background:rgba(13,27,40,.56);
+      z-index:2500;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      padding:16px;
+    }
+    .modal {
+      width:min(680px, 96vw);
+      max-height:92vh;
+      overflow:auto;
+      background:#fff;
+      border:1px solid var(--line);
+      border-radius:14px;
+      padding:16px;
+      box-shadow:0 20px 48px rgba(16,34,53,.24);
+    }
+    .recovery-key {
+      font-family:"SF Mono", Menlo, Consolas, monospace;
+      background:#f5fafc;
+      border:1px solid #d7e4ec;
+      border-radius:8px;
+      padding:10px;
+      word-break:break-all;
+      white-space:pre-wrap;
+      color:#173247;
+    }
+    .recovery-qr-wrap { display:flex; justify-content:center; margin-top:10px; }
+    .recovery-qr-wrap img {
+      width:256px;
+      max-width:80vw;
+      height:auto;
+      background:#fff;
+      padding:8px;
+      border-radius:8px;
+      border:1px solid #d8e4ec;
+    }
+    .row { display:flex; gap:8px; }
+    @media (max-width: 940px) {
+      .page { grid-template-columns:1fr; padding:14px; }
+      .hero { min-height:200px; }
+    }
+  </style>
+</head>
+<body>
+<div class="page">
+  <section class="hero">
+    <div>
+      <h1>Open Accord</h1>
+      <p>Choose an identity to sign in. You can create a new identity or restore one from a recovery key.</p>
+    </div>
+    <div class="hero-notes">
+      <div class="hero-note">Identities are local key files. Keep a secure offline backup.</div>
+      <div class="hero-note">New identity creation includes recovery text and QR for fast secure capture.</div>
+      <div class="hero-note">This page only handles login/setup. Messaging appears after sign-in.</div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="heading">
+      <h2>Identity Login</h2>
+      <span class="tag">Local</span>
+    </div>
+    <p class="sub">Select one identity and connect, or create/restore below.</p>
+    <div id="setupErr" class="error"></div>
+
+    <div id="setupList" class="list"></div>
+    <div class="btn-row">
+      <button id="setupConnect" class="btn btn-primary">Connect Selected</button>
+      <button id="setupCreate" class="btn btn-secondary">Create New Identity</button>
+    </div>
+    <button id="setupBackup" class="btn btn-secondary" style="margin-top:2px;">Backup Selected</button>
+
+    <div class="section">
+      <h3>Restore</h3>
+      <input id="setupRecoveryInput" class="input" placeholder="Base58 recovery key (dashes/spaces allowed)">
+      <button id="setupRestore" class="btn btn-warm">Restore Identity</button>
+    </div>
+  </section>
+</div>
+
+<div id="recoveryOverlay" class="overlay" hidden>
+  <div class="modal">
+    <div class="row" style="align-items:center;">
+      <h3 style="margin:0; flex:1; font-size:16px;">Recovery Pack</h3>
+      <button id="recoveryClose" style="width:auto; padding:5px 9px;" title="Close">Close</button>
+    </div>
+    <div class="small" id="recoveryMeta"></div>
+    <div class="small" style="margin-top:10px;">Recovery key (store offline and private):</div>
+    <div id="recoveryKey" class="recovery-key"></div>
+    <div class="small" style="margin-top:8px;">QR code</div>
+    <div class="recovery-qr-wrap">
+      <img id="recoveryQR" alt="Recovery QR code">
+    </div>
+    <div class="small" style="margin-top:8px;">Dashes are formatting only and can be ignored during restore.</div>
+    <div class="row" style="margin-top:10px;">
+      <button id="recoveryCopy">Copy Recovery Key</button>
+      <button id="recoveryContinue">Continue</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const setupList = document.getElementById('setupList');
+const setupErr = document.getElementById('setupErr');
+const setupRecoveryInput = document.getElementById('setupRecoveryInput');
+const recoveryOverlay = document.getElementById('recoveryOverlay');
+const recoveryMeta = document.getElementById('recoveryMeta');
+const recoveryKeyEl = document.getElementById('recoveryKey');
+const recoveryQREl = document.getElementById('recoveryQR');
+let selectedSetupPath = '';
+let recoveryResolver = null;
+
+async function post(url, body) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body || {}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || ('http ' + res.status));
+  return data;
+}
+
+async function setupStatus() {
+  const res = await fetch('/api/setup/status');
+  if (!res.ok) throw new Error('setup status failed');
+  return res.json();
+}
+
+function renderSetupIdentities(ids) {
+  setupList.innerHTML = '';
+  const items = Array.isArray(ids) ? ids : [];
+  if (items.length === 0) {
+    setupList.textContent = 'No identities found.';
+    selectedSetupPath = '';
+    return;
+  }
+  if (!selectedSetupPath || !items.some((x) => (x.path || '') === selectedSetupPath)) {
+    const cur = items.find((x) => x.current);
+    selectedSetupPath = (cur && cur.path) || (items[0].path || '');
+  }
+  for (const it of items) {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'setup-id-row';
+    if ((it.path || '') === selectedSetupPath) row.classList.add('active');
+    const label = (it.name || '').trim() || ((it.login_id || '').slice(0, 12) || '(unknown)');
+    row.innerHTML = `${label}<span class="setup-id-meta">${(it.login_id || '').slice(0, 12)} · ${it.path || ''}</span>`;
+    row.onclick = () => {
+      selectedSetupPath = it.path || '';
+      renderSetupIdentities(items);
+    };
+    setupList.appendChild(row);
+  }
+}
+
+async function refreshSetupUI() {
+  const st = await setupStatus();
+  if (st.connected) {
+    window.location.href = '/app';
+    return st;
+  }
+  renderSetupIdentities(st.identities || []);
+  return st;
+}
+
+async function connectSelectedIdentity() {
+  if (!selectedSetupPath) {
+    setupErr.textContent = 'Select an identity first.';
+    return;
+  }
+  setupErr.textContent = '';
+  await post('/api/setup/connect', {path: selectedSetupPath});
+  window.location.href = '/app';
+}
+
+async function createIdentityFromSetup() {
+  setupErr.textContent = '';
+  const created = await post('/api/setup/create', {});
+  const rec = (created.recovery_text || '').trim();
+  const qr = (created.recovery_qr || '').trim();
+  const shouldConnect = await new Promise((resolve) => {
+    recoveryMeta.textContent = `Identity created: ${created.path || ''}  login_id: ${created.login_id || ''}`;
+    recoveryKeyEl.textContent = rec;
+    recoveryQREl.src = qr;
+    recoveryOverlay.hidden = false;
+    recoveryResolver = resolve;
+  });
+  selectedSetupPath = created.path || '';
+  await refreshSetupUI();
+  if (shouldConnect && selectedSetupPath) {
+    await post('/api/setup/connect', {path: selectedSetupPath});
+    window.location.href = '/app';
+  }
+}
+
+async function backupSelectedIdentity() {
+  if (!selectedSetupPath) {
+    setupErr.textContent = 'Select an identity first.';
+    return;
+  }
+  setupErr.textContent = '';
+  const pack = await post('/api/setup/backup', {path: selectedSetupPath});
+  await new Promise((resolve) => {
+    recoveryMeta.textContent = `Backup for: ${pack.path || ''}  login_id: ${pack.login_id || ''}`;
+    recoveryKeyEl.textContent = (pack.recovery_text || '').trim();
+    recoveryQREl.src = (pack.recovery_qr || '').trim();
+    recoveryOverlay.hidden = false;
+    recoveryResolver = resolve;
+  });
+}
+
+async function restoreIdentityFromSetup() {
+  const recovery = (setupRecoveryInput.value || '').trim();
+  if (!recovery) {
+    setupErr.textContent = 'Enter a recovery key first.';
+    return;
+  }
+  setupErr.textContent = '';
+  const restored = await post('/api/setup/restore', {recovery_key: recovery});
+  setupRecoveryInput.value = '';
+  selectedSetupPath = restored.path || '';
+  await refreshSetupUI();
+}
+
+document.getElementById('recoveryClose').onclick = () => {
+  recoveryOverlay.hidden = true;
+  if (recoveryResolver) {
+    const r = recoveryResolver;
+    recoveryResolver = null;
+    r(false);
+  }
+};
+
+document.getElementById('recoveryContinue').onclick = () => {
+  recoveryOverlay.hidden = true;
+  if (recoveryResolver) {
+    const r = recoveryResolver;
+    recoveryResolver = null;
+    r(true);
+  }
+};
+
+document.getElementById('recoveryCopy').onclick = async () => {
+  const txt = (recoveryKeyEl.textContent || '').trim();
+  if (!txt) return;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(txt);
+    }
+  } catch (_) {
+  }
+};
+
+document.getElementById('setupConnect').onclick = async () => {
+  try {
+    await connectSelectedIdentity();
+  } catch (e) {
+    setupErr.textContent = e.message || 'connect failed';
+  }
+};
+
+document.getElementById('setupCreate').onclick = async () => {
+  try {
+    await createIdentityFromSetup();
+  } catch (e) {
+    setupErr.textContent = e.message || 'create failed';
+  }
+};
+
+document.getElementById('setupBackup').onclick = async () => {
+  try {
+    await backupSelectedIdentity();
+  } catch (e) {
+    setupErr.textContent = e.message || 'backup failed';
+  }
+};
+
+document.getElementById('setupRestore').onclick = async () => {
+  try {
+    await restoreIdentityFromSetup();
+  } catch (e) {
+    setupErr.textContent = e.message || 'restore failed';
+  }
+};
+
+refreshSetupUI().catch((e) => {
+  setupErr.textContent = e.message || 'setup failed';
+});
+</script>
+</body>
+</html>

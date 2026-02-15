@@ -53,6 +53,9 @@
     button { background: var(--accent); color:#001018; font-weight:700; cursor:pointer; border-color:transparent; }
     .row { display:flex; gap:8px; }
     .row > * { flex:1; }
+    .composer-row { display:flex; gap:8px; align-items:stretch; }
+    .composer-row textarea { flex:1; margin:0; min-height:42px; }
+    .composer-send { width:auto; min-width:104px; margin:0; white-space:nowrap; }
     .small { font-size:12px; color:var(--muted); }
     .linkish { cursor:pointer; color:#8ecbff; text-decoration:underline; text-decoration-color:transparent; transition:text-decoration-color .15s; }
     .linkish:hover { text-decoration-color:#8ecbff; }
@@ -135,6 +138,22 @@
       position:absolute; right:10px; bottom:52px; width:286px; z-index:5;
       box-shadow:0 10px 28px rgba(0,0,0,.5);
     }
+    .overlay {
+      position:fixed; inset:0; background:rgba(5,10,14,.72); z-index:2500;
+      display:flex; align-items:center; justify-content:center; padding:16px;
+    }
+    .modal {
+      width:min(680px, 96vw); max-height:92vh; overflow:auto;
+      background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px;
+      box-shadow:0 16px 42px rgba(0,0,0,.55);
+    }
+    .recovery-key {
+      font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+      background:#10171f; border:1px solid #2d3c4b; border-radius:8px;
+      padding:10px; word-break:break-all; white-space:pre-wrap;
+    }
+    .recovery-qr-wrap { display:flex; justify-content:center; margin-top:10px; }
+    .recovery-qr-wrap img { width:256px; max-width:80vw; height:auto; background:#fff; padding:8px; border-radius:8px; }
     @media (max-width: 900px) {
       .wrap { height:auto; min-height:100vh; grid-template-columns: 1fr; }
       .profile-card { left:12px; right:12px; top:12px; width:auto; }
@@ -148,7 +167,10 @@
 <body>
 <div id="mainWrap" class="wrap">
   <div class="panel left-panel">
-    <h3 style="margin-top:12px">Friends: <span id="friendsUserName" class="friends-user"></span></h3>
+    <div class="header-row" style="margin-top:12px; margin-bottom:8px;">
+      <h3 style="margin:0">Friends: <span id="friendsUserName" class="friends-user"></span></h3>
+      <button id="logoutBtn" class="row-icon-btn" title="Logout and switch identity">Logout</button>
+    </div>
     <div id="friendList" class="small friend-list"></div>
     <div class="header-row" style="margin-top:10px;">
       <h3>Servers</h3>
@@ -218,9 +240,9 @@
     <div class="panel">
       <h3 id="chatTitle">Chat</h3>
       <div id="chatLog"></div>
-      <textarea id="message" rows="4" placeholder="type message"></textarea>
-      <div class="row">
-        <button id="send">Send</button>
+      <div class="composer-row">
+        <textarea id="message" rows="2" placeholder="type message"></textarea>
+        <button id="send" class="composer-send">Send</button>
       </div>
     </div>
   </div>
@@ -928,9 +950,41 @@ async function bootstrap() {
 }
 
 let lastPresenceCheckAt = 0;
+let pollTimer = null;
+
+function resetUIForSetup() {
+  since = 0;
+  selfLoginID = '';
+  latestTargets = [];
+  latestPendingFriends = [];
+  latestPendingInvites = [];
+  latestGroups = [];
+  activeTarget = '';
+  activeGroup = '';
+  activeChannel = 'default';
+  unreadDM = {};
+  unreadGroupChannel = {};
+  pendingInviteKeys = {};
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+  friendList.textContent = '';
+  groupList.textContent = '';
+  channelList.textContent = '';
+  chatEl.innerHTML = '';
+  infoEl.textContent = '';
+  updateChatContext();
+}
+
 async function poll() {
   try {
     const res = await fetch('/api/events?since=' + since);
+    if (res.status === 409) {
+      window.location.href = '/login';
+      return;
+    }
+    if (!res.ok) return;
     const data = await res.json();
     if (data.pending_invites) updatePendingInvites(data.pending_invites || []);
     for (const ev of (data.events || [])) {
@@ -950,8 +1004,9 @@ async function poll() {
   }
 }
 
-setInterval(poll, 1000);
 bootstrap().then(poll);
+if (pollTimer) clearInterval(pollTimer);
+pollTimer = setInterval(poll, 1000);
 
 document.getElementById('send').onclick = async () => {
   const text = document.getElementById('message').value.trim();
@@ -1039,6 +1094,14 @@ document.getElementById('presenceSave').onclick = async () => {
     const data = await post('/api/presence/set', {visible, ttl_sec});
     if (typeof data.ttl_sec === 'number') presenceTTL.value = String(data.ttl_sec);
   } catch (e) { appendInfo(`presence update failed: ${e.message}`); }
+};
+
+document.getElementById('logoutBtn').onclick = async () => {
+  try {
+    await post('/api/setup/disconnect', {});
+  } catch (_) {
+  }
+  window.location.href = '/login';
 };
 </script>
 </body>

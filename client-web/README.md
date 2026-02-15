@@ -19,9 +19,9 @@ Options:
 
 On startup it:
 
-1. Prompts identity select/create.
-2. Connects/authenticates to goAccord server.
-3. Starts local HTTP server and serves a browser UI.
+1. Starts local HTTP server and serves a browser UI.
+2. Lets you choose/create/restore identity in the web UI.
+3. Connects/authenticates to goAccord server after identity selection.
 
 ## UI capabilities
 

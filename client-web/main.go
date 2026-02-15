@@ -19,6 +19,7 @@ import (
 	"html/template"
 	"io"
 	"log"
+	"math/big"
 	"net"
 	"net/http"
 	"os"
@@ -32,6 +33,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/skip2/go-qrcode"
 	"goaccord/internal/netsec"
 )
 
@@ -272,6 +274,9 @@ type webClient struct {
 
 	serverAddr   string
 	reconnecting bool
+	stopCh       chan struct{}
+	stopOnce     sync.Once
+	manualClose  bool
 }
 
 const (
@@ -1072,6 +1077,12 @@ func (c *webClient) networkLoop(ch <-chan netMsg) {
 }
 
 func (c *webClient) handleDisconnect(err error) {
+	c.mu.Lock()
+	manual := c.manualClose
+	c.mu.Unlock()
+	if manual {
+		return
+	}
 	if errors.Is(err, io.EOF) {
 		c.addEvent("info", "connection closed; reconnecting...")
 	} else {
@@ -1090,6 +1101,12 @@ func (c *webClient) handleDisconnect(err error) {
 func (c *webClient) reconnectLoop() {
 	attempt := 0
 	for {
+		c.mu.Lock()
+		manual := c.manualClose
+		c.mu.Unlock()
+		if manual {
+			return
+		}
 		if attempt > 0 {
 			backoff := time.Second * time.Duration(1<<minInt(attempt, 5))
 			time.Sleep(backoff)
@@ -1136,6 +1153,19 @@ func (c *webClient) reconnectLoop() {
 		}
 		return
 	}
+}
+
+func (c *webClient) close() {
+	c.mu.Lock()
+	c.manualClose = true
+	conn := c.conn
+	c.mu.Unlock()
+	if conn != nil {
+		_ = conn.Close()
+	}
+	c.stopOnce.Do(func() {
+		close(c.stopCh)
+	})
 }
 
 func cloneStringMap(m map[string]string) map[string]string {
@@ -1974,15 +2004,15 @@ func (c *webClient) handleProfileCard(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"profile": c.profileCard(loginID)})
 }
 
-//go:embed webui.html
+//go:embed webui.html login.html
 var uiFS embed.FS
 
-func pageTemplate() (*template.Template, error) {
-	body, err := uiFS.ReadFile("webui.html")
+func pageTemplate(name string) (*template.Template, error) {
+	body, err := uiFS.ReadFile(name)
 	if err != nil {
 		return nil, err
 	}
-	return template.New("webui").Parse(string(body))
+	return template.New(name).Parse(string(body))
 }
 
 func openBrowser(url string) {
@@ -2312,37 +2342,50 @@ func loginIDForPubKey(pub ed25519.PublicKey) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func loadKey(path string) (ed25519.PrivateKey, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var kf keyFile
+	if err := json.Unmarshal(data, &kf); err != nil {
+		return nil, err
+	}
+	raw, err := base64.StdEncoding.DecodeString(kf.PrivateKey)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("invalid private key size")
+	}
+	return ed25519.PrivateKey(raw), nil
+}
+
 func loadOrCreateKey(path string) (ed25519.PrivateKey, error) {
 	if data, err := os.ReadFile(path); err == nil {
-		var kf keyFile
-		if err := json.Unmarshal(data, &kf); err != nil {
-			return nil, err
-		}
-		raw, err := base64.StdEncoding.DecodeString(kf.PrivateKey)
-		if err != nil {
-			return nil, err
-		}
-		if len(raw) != ed25519.PrivateKeySize {
-			return nil, fmt.Errorf("invalid private key size")
-		}
-		return ed25519.PrivateKey(raw), nil
+		_ = data
+		return loadKey(path)
 	}
 
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err
 	}
+	return priv, saveIdentityKey(path, priv)
+}
+
+func saveIdentityKey(path string, priv ed25519.PrivateKey) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, err
+		return err
 	}
 	payload, err := json.MarshalIndent(keyFile{PrivateKey: base64.StdEncoding.EncodeToString(priv)}, "", "  ")
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if err := writeFileAtomic(path, payload, 0o600); err != nil {
-		return nil, err
+		return err
 	}
-	return priv, nil
+	return nil
 }
 
 func e2eePathForKey(home string, keyPath string) string {
@@ -2589,6 +2632,186 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
 	return nil
 }
 
+func copyIdentityFile(srcPath string, dstPath string) (string, error) {
+	srcPath = strings.TrimSpace(srcPath)
+	dstPath = strings.TrimSpace(dstPath)
+	if srcPath == "" || dstPath == "" {
+		return "", fmt.Errorf("source and destination are required")
+	}
+	if strings.HasSuffix(dstPath, string(os.PathSeparator)) {
+		dstPath = filepath.Join(dstPath, filepath.Base(srcPath))
+	} else if st, err := os.Stat(dstPath); err == nil && st.IsDir() {
+		dstPath = filepath.Join(dstPath, filepath.Base(srcPath))
+	}
+	if filepath.Clean(srcPath) == filepath.Clean(dstPath) {
+		return "", fmt.Errorf("backup path must be different from identity path")
+	}
+	raw, err := os.ReadFile(srcPath)
+	if err != nil {
+		return "", err
+	}
+	if err := writeFileAtomic(dstPath, raw, 0o600); err != nil {
+		return "", err
+	}
+	return dstPath, nil
+}
+
+func base58Encode(input []byte) string {
+	if len(input) == 0 {
+		return ""
+	}
+	const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+	x := new(big.Int).SetBytes(input)
+	base := big.NewInt(58)
+	mod := new(big.Int)
+	out := make([]byte, 0, len(input)*2)
+	for x.Sign() > 0 {
+		x.DivMod(x, base, mod)
+		out = append(out, alphabet[mod.Int64()])
+	}
+	for i := 0; i < len(input) && input[i] == 0; i++ {
+		out = append(out, alphabet[0])
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return string(out)
+}
+
+func base58Decode(input string) ([]byte, error) {
+	const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+	idx := make(map[rune]int, len(alphabet))
+	for i, c := range alphabet {
+		idx[c] = i
+	}
+
+	input = strings.Map(func(r rune) rune {
+		switch r {
+		case '-', ' ', '\t', '\n', '\r':
+			return -1
+		default:
+			return r
+		}
+	}, strings.TrimSpace(input))
+	if input == "" {
+		return nil, fmt.Errorf("empty recovery text")
+	}
+
+	n := big.NewInt(0)
+	base := big.NewInt(58)
+	for _, c := range input {
+		v, ok := idx[c]
+		if !ok {
+			return nil, fmt.Errorf("invalid base58 character: %q", c)
+		}
+		n.Mul(n, base)
+		n.Add(n, big.NewInt(int64(v)))
+	}
+	decoded := n.Bytes()
+	leadingZeros := 0
+	for _, c := range input {
+		if c == '1' {
+			leadingZeros++
+			continue
+		}
+		break
+	}
+	if leadingZeros > 0 {
+		decoded = append(make([]byte, leadingZeros), decoded...)
+	}
+	return decoded, nil
+}
+
+func groupedToken(s string, group int) string {
+	if group <= 0 || len(s) <= group {
+		return s
+	}
+	parts := make([]string, 0, (len(s)+group-1)/group)
+	for i := 0; i < len(s); i += group {
+		end := i + group
+		if end > len(s) {
+			end = len(s)
+		}
+		parts = append(parts, s[i:end])
+	}
+	return strings.Join(parts, "-")
+}
+
+func recoveryQRDataURL(recoveryKey string) (string, error) {
+	recoveryKey = strings.TrimSpace(recoveryKey)
+	if recoveryKey == "" {
+		return "", fmt.Errorf("recovery key is required")
+	}
+	png, err := qrcode.Encode(recoveryKey, qrcode.Medium, 256)
+	if err != nil {
+		return "", err
+	}
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(png), nil
+}
+
+func promptIdentityBackup(path string, priv ed25519.PrivateKey, reader *bufio.Reader) {
+	pub := priv.Public().(ed25519.PublicKey)
+	fmt.Printf("\nNew identity created: %s\n", path)
+	fmt.Printf("login_id: %s\n", loginIDForPubKey(pub))
+	fmt.Println("Back up this identity now. Losing the key file means losing access to this identity.")
+
+	fmt.Print("Create a backup copy now? [Y/n]: ")
+	backupChoice, _ := reader.ReadString('\n')
+	backupChoice = strings.ToLower(strings.TrimSpace(backupChoice))
+	if backupChoice == "" || backupChoice == "y" || backupChoice == "yes" {
+		fmt.Print("Backup destination path (file or directory, blank to skip): ")
+		dst, _ := reader.ReadString('\n')
+		dst = strings.TrimSpace(dst)
+		if dst != "" {
+			savedPath, err := copyIdentityFile(path, dst)
+			if err != nil {
+				fmt.Printf("backup failed: %v\n", err)
+			} else {
+				fmt.Printf("backup saved: %s\n", savedPath)
+			}
+		}
+	}
+
+	fmt.Print("Show printable recovery text now? [Y/n]: ")
+	recoveryChoice, _ := reader.ReadString('\n')
+	recoveryChoice = strings.ToLower(strings.TrimSpace(recoveryChoice))
+	if recoveryChoice == "" || recoveryChoice == "y" || recoveryChoice == "yes" {
+		seedB58 := base58Encode(priv.Seed())
+		fmt.Println("Recovery text (Base58, keep offline/private):")
+		fmt.Println(groupedToken(seedB58, 5))
+		fmt.Println("Dashes are formatting only; ignore them when restoring.")
+		fmt.Println("This is sufficient to recover the identity if imported later.")
+	}
+	fmt.Println()
+}
+
+func restoreIdentityFromRecovery(home string, reader *bufio.Reader) (string, error) {
+	fmt.Print("Enter recovery text (Base58; dashes/spaces are ignored): ")
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	seed, err := base58Decode(line)
+	if err != nil {
+		return "", err
+	}
+	if len(seed) != ed25519.SeedSize {
+		return "", fmt.Errorf("invalid recovery seed length: got %d bytes, expected %d", len(seed), ed25519.SeedSize)
+	}
+	priv := ed25519.NewKeyFromSeed(seed)
+	idsDir := filepath.Join(home, ".goaccord", "identities")
+	if err := os.MkdirAll(idsDir, 0o700); err != nil {
+		return "", err
+	}
+	path := filepath.Join(idsDir, fmt.Sprintf("id-%d.json", time.Now().UnixNano()))
+	if err := saveIdentityKey(path, priv); err != nil {
+		return "", err
+	}
+	pub := priv.Public().(ed25519.PublicKey)
+	fmt.Printf("identity restored: %s [%s]\n\n", path, shortID(loginIDForPubKey(pub)))
+	return path, nil
+}
+
 func listIdentityCandidates(home string, currentPath string) []identityCandidate {
 	seen := make(map[string]struct{})
 	paths := make([]string, 0)
@@ -2665,6 +2888,8 @@ func promptIdentityPath(home string, currentPath string, conflictMode bool) (str
 	}
 	createIdx := idx
 	fmt.Printf("  %d) create a new identity\n", createIdx)
+	restoreIdx := createIdx + 1
+	fmt.Printf("  %d) restore identity from recovery text\n", restoreIdx)
 	fmt.Println("  q) quit")
 	fmt.Print("> ")
 
@@ -2690,10 +2915,15 @@ func promptIdentityPath(home string, currentPath string, conflictMode bool) (str
 			return "", err
 		}
 		path := filepath.Join(idsDir, fmt.Sprintf("id-%d.json", time.Now().UnixNano()))
-		if _, err := loadOrCreateKey(path); err != nil {
+		priv, err := loadOrCreateKey(path)
+		if err != nil {
 			return "", err
 		}
+		promptIdentityBackup(path, priv, reader)
 		return path, nil
+	}
+	if n == restoreIdx {
+		return restoreIdentityFromRecovery(home, reader)
 	}
 	return "", fmt.Errorf("invalid choice")
 }
@@ -2720,67 +2950,50 @@ func connectWithIdentitySelection(addr string, home string, initialKeyPath strin
 	}
 }
 
-func main() {
-	serverAddr := flag.String("addr", "127.0.0.1:9101", "server address")
-	webAddr := flag.String("web", "127.0.0.1:0", "local web server listen address (default ephemeral port)")
-	keyPath := flag.String("key", "", "private key file path")
-	contactsPath := flag.String("contacts", "", "contacts file path")
-	profilePath := flag.String("profile", "", "profile file path")
-	autoOpen := flag.Bool("open", true, "auto-open browser")
-	flag.Parse()
-
-	home, err := os.UserHomeDir()
+func newWebClientForIdentity(serverAddr string, home string, keyPath string, contactsPath string, profilePath string) (*webClient, error) {
+	priv, err := loadOrCreateKey(keyPath)
 	if err != nil {
-		log.Fatalf("unable to resolve home directory: %v", err)
+		return nil, fmt.Errorf("key load/create failed: %w", err)
 	}
-	if strings.TrimSpace(*keyPath) == "" {
-		*keyPath = filepath.Join(home, ".goaccord", "ed25519_key.json")
-	}
-	selectedStartupKeyPath, err := promptIdentityPath(home, *keyPath, false)
+	conn, enc, events, loginID, pubB64, err := runAuth(serverAddr, priv)
 	if err != nil {
-		log.Fatalf("identity selection failed: %v", err)
-	}
-	*keyPath = selectedStartupKeyPath
-	if strings.TrimSpace(*contactsPath) == "" {
-		*contactsPath = filepath.Join(home, ".goaccord", "contacts.json")
-	}
-	if strings.TrimSpace(*profilePath) == "" {
-		*profilePath = filepath.Join(home, ".goaccord", "profiles", "profile-"+filepath.Base(strings.TrimSpace(*keyPath))+".json")
+		return nil, fmt.Errorf("connect/auth failed: %w", err)
 	}
 
-	selectedKeyPath, priv, conn, enc, events, loginID, pubB64, err := connectWithIdentitySelection(*serverAddr, home, *keyPath)
-	if err != nil {
-		log.Fatalf("connect/auth failed: %v", err)
-	}
-	*keyPath = selectedKeyPath
-	e2eePath := e2eePathForKey(home, *keyPath)
-	e2eeStatePath := e2eeStatePathForKey(home, *keyPath)
+	e2eePath := e2eePathForKey(home, keyPath)
+	e2eeStatePath := e2eeStatePathForKey(home, keyPath)
 	e2eePriv, e2eePubB64, err := loadOrCreateE2EEKey(e2eePath)
 	if err != nil {
-		log.Fatalf("e2ee key load failed: %v", err)
+		_ = conn.Close()
+		return nil, fmt.Errorf("e2ee key load failed: %w", err)
 	}
 	peerE2EEMulti, friendKeyNonces, err := loadE2EEState(e2eeStatePath)
 	if err != nil {
-		log.Fatalf("e2ee state load failed: %v", err)
+		_ = conn.Close()
+		return nil, fmt.Errorf("e2ee state load failed: %w", err)
 	}
 
-	contacts, err := loadContacts(*contactsPath)
+	contacts, err := loadContacts(contactsPath)
 	if err != nil {
-		log.Fatalf("contacts load failed: %v", err)
+		_ = conn.Close()
+		return nil, fmt.Errorf("contacts load failed: %w", err)
 	}
-	displayName, profileText, nicknames, peerProfiles, profileRefreshed, err := loadProfile(*profilePath)
+	displayName, profileText, nicknames, peerProfiles, profileRefreshed, err := loadProfile(profilePath)
 	if err != nil {
-		log.Fatalf("profile load failed: %v", err)
+		_ = conn.Close()
+		return nil, fmt.Errorf("profile load failed: %w", err)
 	}
-	uiStatePath := uiStatePathForProfile(*profilePath)
+	uiStatePath := uiStatePathForProfile(profilePath)
 	savedGroups, savedCtx, err := loadUIState(uiStatePath)
 	if err != nil {
-		log.Fatalf("ui state load failed: %v", err)
+		_ = conn.Close()
+		return nil, fmt.Errorf("ui state load failed: %w", err)
 	}
 	if strings.TrimSpace(displayName) == "" {
-		displayName = promptDisplayName(displayName)
-		if err := saveProfile(*profilePath, displayName, profileText, nicknames, peerProfiles, profileRefreshed); err != nil {
-			log.Fatalf("profile save failed: %v", err)
+		displayName = defaultDisplayName()
+		if err := saveProfile(profilePath, displayName, profileText, nicknames, peerProfiles, profileRefreshed); err != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("profile save failed: %w", err)
 		}
 	}
 
@@ -2794,8 +3007,8 @@ func main() {
 		loginID:          loginID,
 		displayName:      displayName,
 		profileText:      profileText,
-		contactsPath:     *contactsPath,
-		profilePath:      *profilePath,
+		contactsPath:     contactsPath,
+		profilePath:      profilePath,
 		uiStatePath:      uiStatePath,
 		e2eePath:         e2eePath,
 		e2eeStatePath:    e2eeStatePath,
@@ -2819,7 +3032,8 @@ func main() {
 		peerE2EEMulti:    peerE2EEMulti,
 		friendKeyNonces:  friendKeyNonces,
 		e2eeIssues:       make(map[string]string),
-		serverAddr:       *serverAddr,
+		serverAddr:       serverAddr,
+		stopCh:           make(chan struct{}),
 	}
 	for _, g := range savedGroups {
 		group := strings.TrimSpace(g.Name)
@@ -2846,7 +3060,8 @@ func main() {
 			client.groupOwners[group] = strings.TrimSpace(g.OwnerID)
 		}
 	}
-	client.addEvent("info", "connected to "+*serverAddr)
+
+	client.addEvent("info", "connected to "+serverAddr)
 	client.addEvent("info", "login_id: "+loginID)
 	client.addEvent("info", "display name: "+displayName)
 	if err := client.publishOwnProfile(); err != nil {
@@ -2863,46 +3078,290 @@ func main() {
 	go func() {
 		t := time.NewTicker(presenceKeepaliveInterval)
 		defer t.Stop()
-		for range t.C {
-			if err := client.sendPresenceKeepalive(); err != nil {
-				client.addEvent("info", "presence keepalive failed: "+err.Error())
+		for {
+			select {
+			case <-client.stopCh:
+				return
+			case <-t.C:
+				if err := client.sendPresenceKeepalive(); err != nil {
+					client.addEvent("info", "presence keepalive failed: "+err.Error())
+				}
 			}
 		}
 	}()
+	return client, nil
+}
 
-	tpl, err := pageTemplate()
+func main() {
+	serverAddr := flag.String("addr", "127.0.0.1:9101", "server address")
+	webAddr := flag.String("web", "127.0.0.1:0", "local web server listen address (default ephemeral port)")
+	keyPath := flag.String("key", "", "private key file path")
+	contactsPath := flag.String("contacts", "", "contacts file path")
+	profilePath := flag.String("profile", "", "profile file path")
+	autoOpen := flag.Bool("open", true, "auto-open browser")
+	flag.Parse()
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		log.Fatalf("unable to resolve home directory: %v", err)
+	}
+	if strings.TrimSpace(*keyPath) == "" {
+		*keyPath = filepath.Join(home, ".goaccord", "ed25519_key.json")
+	}
+	if strings.TrimSpace(*contactsPath) == "" {
+		*contactsPath = filepath.Join(home, ".goaccord", "contacts.json")
+	}
+	var appMu sync.RWMutex
+	var client *webClient
+	activeKeyPath := strings.TrimSpace(*keyPath)
+
+	resolveProfilePath := func(kp string) string {
+		if strings.TrimSpace(*profilePath) != "" {
+			return strings.TrimSpace(*profilePath)
+		}
+		return filepath.Join(home, ".goaccord", "profiles", "profile-"+filepath.Base(strings.TrimSpace(kp))+".json")
+	}
+	withClient := func(fn func(*webClient, http.ResponseWriter, *http.Request)) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			appMu.RLock()
+			c := client
+			appMu.RUnlock()
+			if c == nil {
+				writeJSON(w, http.StatusConflict, map[string]any{"error": "identity not connected", "setup_required": true})
+				return
+			}
+			fn(c, w, r)
+		}
+	}
+
+	appTpl, err := pageTemplate("webui.html")
+	if err != nil {
+		log.Fatalf("template load failed: %v", err)
+	}
+	loginTpl, err := pageTemplate("login.html")
 	if err != nil {
 		log.Fatalf("template load failed: %v", err)
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
-		_ = tpl.Execute(w, map[string]any{"Title": "goAccord Web Client"})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		appMu.RLock()
+		connected := client != nil
+		appMu.RUnlock()
+		if connected {
+			http.Redirect(w, r, "/app", http.StatusFound)
+			return
+		}
+		http.Redirect(w, r, "/login", http.StatusFound)
 	})
-	mux.HandleFunc("/api/bootstrap", client.handleBootstrap)
-	mux.HandleFunc("/api/events", client.handleEvents)
-	mux.HandleFunc("/api/targets", client.handleTargets)
-	mux.HandleFunc("/api/groups", client.handleGroups)
-	mux.HandleFunc("/api/send", client.handleSend)
-	mux.HandleFunc("/api/group/create", client.handleGroupCreate)
-	mux.HandleFunc("/api/group/join", client.handleGroupJoin)
-	mux.HandleFunc("/api/group/send", client.handleGroupSend)
-	mux.HandleFunc("/api/group/remove", client.handleGroupRemove)
-	mux.HandleFunc("/api/group/invite", client.handleGroupInvite)
-	mux.HandleFunc("/api/context/set", client.handleContextSet)
-	mux.HandleFunc("/api/ping", client.handlePing)
-	mux.HandleFunc("/api/friend/add", client.handleFriendAdd)
-	mux.HandleFunc("/api/friend/accept", client.handleFriendAccept)
-	mux.HandleFunc("/api/friend/ignore", client.handleFriendIgnore)
-	mux.HandleFunc("/api/invite/accept", client.handleInviteAccept)
-	mux.HandleFunc("/api/invite/ignore", client.handleInviteIgnore)
-	mux.HandleFunc("/api/invite/reject", client.handleInviteReject)
-	mux.HandleFunc("/api/e2ee/rotate", client.handleE2EERotate)
-	mux.HandleFunc("/api/profile/set", client.handleProfileSet)
-	mux.HandleFunc("/api/profile/get", client.handleProfileGet)
-	mux.HandleFunc("/api/presence/check", client.handlePresenceCheck)
-	mux.HandleFunc("/api/presence/set", client.handlePresenceSet)
-	mux.HandleFunc("/api/profile/card", client.handleProfileCard)
+	mux.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
+		appMu.RLock()
+		connected := client != nil
+		appMu.RUnlock()
+		if connected {
+			http.Redirect(w, r, "/app", http.StatusFound)
+			return
+		}
+		_ = loginTpl.Execute(w, map[string]any{"Title": "goAccord Login"})
+	})
+	mux.HandleFunc("/app", func(w http.ResponseWriter, r *http.Request) {
+		appMu.RLock()
+		connected := client != nil
+		appMu.RUnlock()
+		if !connected {
+			http.Redirect(w, r, "/login", http.StatusFound)
+			return
+		}
+		_ = appTpl.Execute(w, map[string]any{"Title": "goAccord Web Client"})
+	})
+	mux.HandleFunc("/api/setup/status", func(w http.ResponseWriter, _ *http.Request) {
+		appMu.RLock()
+		c := client
+		currentPath := activeKeyPath
+		appMu.RUnlock()
+		candidates := listIdentityCandidates(home, currentPath)
+		ids := make([]map[string]any, 0, len(candidates))
+		for _, cand := range candidates {
+			ids = append(ids, map[string]any{
+				"path":     cand.Path,
+				"login_id": cand.LoginID,
+				"name":     cand.Name,
+				"current":  cand.Path == currentPath,
+			})
+		}
+		resp := map[string]any{
+			"connected":  c != nil,
+			"active_key": currentPath,
+			"identities": ids,
+		}
+		if c != nil {
+			resp["login_id"] = c.loginID
+			resp["display_name"] = c.displayName
+		}
+		writeJSON(w, http.StatusOK, resp)
+	})
+	mux.HandleFunc("/api/setup/create", func(w http.ResponseWriter, _ *http.Request) {
+		idsDir := filepath.Join(home, ".goaccord", "identities")
+		if err := os.MkdirAll(idsDir, 0o700); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		path := filepath.Join(idsDir, fmt.Sprintf("id-%d.json", time.Now().UnixNano()))
+		priv, err := loadOrCreateKey(path)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		pub := priv.Public().(ed25519.PublicKey)
+		recoveryRaw := base58Encode(priv.Seed())
+		qrDataURL, err := recoveryQRDataURL(recoveryRaw)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":            true,
+			"path":          path,
+			"login_id":      loginIDForPubKey(pub),
+			"recovery_text": groupedToken(recoveryRaw, 5),
+			"recovery_qr":   qrDataURL,
+		})
+	})
+	mux.HandleFunc("/api/setup/backup", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Path string `json:"path"`
+		}
+		if err := decodeJSON(r, &req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+			return
+		}
+		path := strings.TrimSpace(req.Path)
+		if path == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "identity path required"})
+			return
+		}
+		priv, err := loadKey(path)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		pub := priv.Public().(ed25519.PublicKey)
+		recoveryRaw := base58Encode(priv.Seed())
+		qrDataURL, err := recoveryQRDataURL(recoveryRaw)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":            true,
+			"path":          path,
+			"login_id":      loginIDForPubKey(pub),
+			"recovery_text": groupedToken(recoveryRaw, 5),
+			"recovery_qr":   qrDataURL,
+		})
+	})
+	mux.HandleFunc("/api/setup/restore", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			RecoveryKey string `json:"recovery_key"`
+		}
+		if err := decodeJSON(r, &req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+			return
+		}
+		seed, err := base58Decode(req.RecoveryKey)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if len(seed) != ed25519.SeedSize {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid recovery seed length: got %d bytes, expected %d", len(seed), ed25519.SeedSize)})
+			return
+		}
+		idsDir := filepath.Join(home, ".goaccord", "identities")
+		if err := os.MkdirAll(idsDir, 0o700); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		path := filepath.Join(idsDir, fmt.Sprintf("id-%d.json", time.Now().UnixNano()))
+		priv := ed25519.NewKeyFromSeed(seed)
+		if err := saveIdentityKey(path, priv); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		pub := priv.Public().(ed25519.PublicKey)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path": path, "login_id": loginIDForPubKey(pub)})
+	})
+	mux.HandleFunc("/api/setup/connect", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Path string `json:"path"`
+		}
+		if err := decodeJSON(r, &req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+			return
+		}
+		chosen := strings.TrimSpace(req.Path)
+		if chosen == "" {
+			appMu.RLock()
+			chosen = activeKeyPath
+			appMu.RUnlock()
+		}
+		if strings.TrimSpace(chosen) == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "identity path required"})
+			return
+		}
+		appMu.RLock()
+		existing := client
+		appMu.RUnlock()
+		if existing != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "already connected; restart client-web to switch identity"})
+			return
+		}
+		connectedClient, err := newWebClientForIdentity(*serverAddr, home, chosen, *contactsPath, resolveProfilePath(chosen))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		appMu.Lock()
+		client = connectedClient
+		activeKeyPath = chosen
+		appMu.Unlock()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path": chosen, "login_id": connectedClient.loginID})
+	})
+	mux.HandleFunc("/api/setup/disconnect", func(w http.ResponseWriter, _ *http.Request) {
+		appMu.Lock()
+		c := client
+		client = nil
+		appMu.Unlock()
+		if c != nil {
+			c.close()
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	})
+
+	mux.HandleFunc("/api/bootstrap", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleBootstrap(w, r) }))
+	mux.HandleFunc("/api/events", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleEvents(w, r) }))
+	mux.HandleFunc("/api/targets", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleTargets(w, r) }))
+	mux.HandleFunc("/api/groups", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleGroups(w, r) }))
+	mux.HandleFunc("/api/send", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleSend(w, r) }))
+	mux.HandleFunc("/api/group/create", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleGroupCreate(w, r) }))
+	mux.HandleFunc("/api/group/join", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleGroupJoin(w, r) }))
+	mux.HandleFunc("/api/group/send", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleGroupSend(w, r) }))
+	mux.HandleFunc("/api/group/remove", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleGroupRemove(w, r) }))
+	mux.HandleFunc("/api/group/invite", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleGroupInvite(w, r) }))
+	mux.HandleFunc("/api/context/set", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleContextSet(w, r) }))
+	mux.HandleFunc("/api/ping", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handlePing(w, r) }))
+	mux.HandleFunc("/api/friend/add", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleFriendAdd(w, r) }))
+	mux.HandleFunc("/api/friend/accept", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleFriendAccept(w, r) }))
+	mux.HandleFunc("/api/friend/ignore", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleFriendIgnore(w, r) }))
+	mux.HandleFunc("/api/invite/accept", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleInviteAccept(w, r) }))
+	mux.HandleFunc("/api/invite/ignore", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleInviteIgnore(w, r) }))
+	mux.HandleFunc("/api/invite/reject", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleInviteReject(w, r) }))
+	mux.HandleFunc("/api/e2ee/rotate", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleE2EERotate(w, r) }))
+	mux.HandleFunc("/api/profile/set", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleProfileSet(w, r) }))
+	mux.HandleFunc("/api/profile/get", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleProfileGet(w, r) }))
+	mux.HandleFunc("/api/presence/check", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handlePresenceCheck(w, r) }))
+	mux.HandleFunc("/api/presence/set", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handlePresenceSet(w, r) }))
+	mux.HandleFunc("/api/profile/card", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleProfileCard(w, r) }))
 
 	ln, err := net.Listen("tcp", *webAddr)
 	if err != nil {

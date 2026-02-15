@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"os"
 	"path/filepath"
@@ -2520,17 +2521,21 @@ func loadOrCreateKey(path string) (ed25519.PrivateKey, error) {
 	if err != nil {
 		return nil, err
 	}
+	return priv, saveIdentityKey(path, priv)
+}
+
+func saveIdentityKey(path string, priv ed25519.PrivateKey) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, err
+		return err
 	}
 	payload, err := json.MarshalIndent(keyFile{PrivateKey: base64.StdEncoding.EncodeToString(priv)}, "", "  ")
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if err := writeFileAtomic(path, payload, 0o600); err != nil {
-		return nil, err
+		return err
 	}
-	return priv, nil
+	return nil
 }
 
 func e2eePathForKey(home string, keyPath string) string {
@@ -2796,6 +2801,174 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
 	return nil
 }
 
+func copyIdentityFile(srcPath string, dstPath string) (string, error) {
+	srcPath = strings.TrimSpace(srcPath)
+	dstPath = strings.TrimSpace(dstPath)
+	if srcPath == "" || dstPath == "" {
+		return "", fmt.Errorf("source and destination are required")
+	}
+	if strings.HasSuffix(dstPath, string(os.PathSeparator)) {
+		dstPath = filepath.Join(dstPath, filepath.Base(srcPath))
+	} else if st, err := os.Stat(dstPath); err == nil && st.IsDir() {
+		dstPath = filepath.Join(dstPath, filepath.Base(srcPath))
+	}
+	if filepath.Clean(srcPath) == filepath.Clean(dstPath) {
+		return "", fmt.Errorf("backup path must be different from identity path")
+	}
+	raw, err := os.ReadFile(srcPath)
+	if err != nil {
+		return "", err
+	}
+	if err := writeFileAtomic(dstPath, raw, 0o600); err != nil {
+		return "", err
+	}
+	return dstPath, nil
+}
+
+func base58Encode(input []byte) string {
+	if len(input) == 0 {
+		return ""
+	}
+	const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+	x := new(big.Int).SetBytes(input)
+	base := big.NewInt(58)
+	mod := new(big.Int)
+	out := make([]byte, 0, len(input)*2)
+	for x.Sign() > 0 {
+		x.DivMod(x, base, mod)
+		out = append(out, alphabet[mod.Int64()])
+	}
+	for i := 0; i < len(input) && input[i] == 0; i++ {
+		out = append(out, alphabet[0])
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return string(out)
+}
+
+func base58Decode(input string) ([]byte, error) {
+	const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+	idx := make(map[rune]int, len(alphabet))
+	for i, c := range alphabet {
+		idx[c] = i
+	}
+
+	input = strings.Map(func(r rune) rune {
+		switch r {
+		case '-', ' ', '\t', '\n', '\r':
+			return -1
+		default:
+			return r
+		}
+	}, strings.TrimSpace(input))
+	if input == "" {
+		return nil, fmt.Errorf("empty recovery text")
+	}
+
+	n := big.NewInt(0)
+	base := big.NewInt(58)
+	for _, c := range input {
+		v, ok := idx[c]
+		if !ok {
+			return nil, fmt.Errorf("invalid base58 character: %q", c)
+		}
+		n.Mul(n, base)
+		n.Add(n, big.NewInt(int64(v)))
+	}
+	decoded := n.Bytes()
+	leadingZeros := 0
+	for _, c := range input {
+		if c == '1' {
+			leadingZeros++
+			continue
+		}
+		break
+	}
+	if leadingZeros > 0 {
+		decoded = append(make([]byte, leadingZeros), decoded...)
+	}
+	return decoded, nil
+}
+
+func groupedToken(s string, group int) string {
+	if group <= 0 || len(s) <= group {
+		return s
+	}
+	parts := make([]string, 0, (len(s)+group-1)/group)
+	for i := 0; i < len(s); i += group {
+		end := i + group
+		if end > len(s) {
+			end = len(s)
+		}
+		parts = append(parts, s[i:end])
+	}
+	return strings.Join(parts, "-")
+}
+
+func promptIdentityBackup(path string, priv ed25519.PrivateKey, reader *bufio.Reader) {
+	pub := priv.Public().(ed25519.PublicKey)
+	fmt.Printf("\nNew identity created: %s\n", path)
+	fmt.Printf("login_id: %s\n", loginIDForPubKey(pub))
+	fmt.Println("Back up this identity now. Losing the key file means losing access to this identity.")
+
+	fmt.Print("Create a backup copy now? [Y/n]: ")
+	backupChoice, _ := reader.ReadString('\n')
+	backupChoice = strings.ToLower(strings.TrimSpace(backupChoice))
+	if backupChoice == "" || backupChoice == "y" || backupChoice == "yes" {
+		fmt.Print("Backup destination path (file or directory, blank to skip): ")
+		dst, _ := reader.ReadString('\n')
+		dst = strings.TrimSpace(dst)
+		if dst != "" {
+			savedPath, err := copyIdentityFile(path, dst)
+			if err != nil {
+				fmt.Printf("backup failed: %v\n", err)
+			} else {
+				fmt.Printf("backup saved: %s\n", savedPath)
+			}
+		}
+	}
+
+	fmt.Print("Show printable recovery text now? [Y/n]: ")
+	recoveryChoice, _ := reader.ReadString('\n')
+	recoveryChoice = strings.ToLower(strings.TrimSpace(recoveryChoice))
+	if recoveryChoice == "" || recoveryChoice == "y" || recoveryChoice == "yes" {
+		seedB58 := base58Encode(priv.Seed())
+		fmt.Println("Recovery text (Base58, keep offline/private):")
+		fmt.Println(groupedToken(seedB58, 5))
+		fmt.Println("Dashes are formatting only; ignore them when restoring.")
+		fmt.Println("This is sufficient to recover the identity if imported later.")
+	}
+	fmt.Println()
+}
+
+func restoreIdentityFromRecovery(home string, reader *bufio.Reader) (string, error) {
+	fmt.Print("Enter recovery text (Base58; dashes/spaces are ignored): ")
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	seed, err := base58Decode(line)
+	if err != nil {
+		return "", err
+	}
+	if len(seed) != ed25519.SeedSize {
+		return "", fmt.Errorf("invalid recovery seed length: got %d bytes, expected %d", len(seed), ed25519.SeedSize)
+	}
+	priv := ed25519.NewKeyFromSeed(seed)
+	idsDir := filepath.Join(home, ".goaccord", "identities")
+	if err := os.MkdirAll(idsDir, 0o700); err != nil {
+		return "", err
+	}
+	path := filepath.Join(idsDir, fmt.Sprintf("id-%d.json", time.Now().UnixNano()))
+	if err := saveIdentityKey(path, priv); err != nil {
+		return "", err
+	}
+	pub := priv.Public().(ed25519.PublicKey)
+	fmt.Printf("identity restored: %s [%s]\n\n", path, shortID(loginIDForPubKey(pub)))
+	return path, nil
+}
+
 func listIdentityCandidates(home string, currentPath string) []identityCandidate {
 	seen := make(map[string]struct{})
 	paths := make([]string, 0)
@@ -2875,6 +3048,8 @@ func promptIdentityPath(home string, currentPath string, conflictMode bool) (str
 	}
 	createIdx := idx
 	fmt.Printf("  %d) create a new identity\n", createIdx)
+	restoreIdx := createIdx + 1
+	fmt.Printf("  %d) restore identity from recovery text\n", restoreIdx)
 	fmt.Println("  q) quit")
 	fmt.Print("> ")
 
@@ -2900,10 +3075,15 @@ func promptIdentityPath(home string, currentPath string, conflictMode bool) (str
 			return "", err
 		}
 		path := filepath.Join(idsDir, fmt.Sprintf("id-%d.json", time.Now().UnixNano()))
-		if _, err := loadOrCreateKey(path); err != nil {
+		priv, err := loadOrCreateKey(path)
+		if err != nil {
 			return "", err
 		}
+		promptIdentityBackup(path, priv, reader)
 		return path, nil
+	}
+	if n == restoreIdx {
+		return restoreIdentityFromRecovery(home, reader)
 	}
 	return "", fmt.Errorf("invalid choice")
 }
