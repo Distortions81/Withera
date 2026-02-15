@@ -658,14 +658,14 @@ func (s *Server) isClientAllowed(loginID string) bool {
 		return false
 	}
 	if s.clientMode == clientModePrivate {
-		s.mu.RLock()
-		_, ok := s.clientAllow[loginID]
-		s.mu.RUnlock()
-		if !ok {
+		if !s.isPersistenceWhitelisted(loginID) {
 			return false
 		}
 	}
 	if s.persistenceMode != persistenceModePersist {
+		return true
+	}
+	if !s.isPersistenceWhitelisted(loginID) {
 		return true
 	}
 	if s.store == nil {
@@ -680,6 +680,9 @@ func (s *Server) isClientAllowed(loginID string) bool {
 		return true
 	}
 	if s.persistAutoHost {
+		if !s.isPersistenceWhitelisted(loginID) {
+			return false
+		}
 		if err := s.store.addHostedUser(loginID); err != nil {
 			log.Printf("failed to auto-host user %s: %v", loginID, err)
 			return false
@@ -687,6 +690,17 @@ func (s *Server) isClientAllowed(loginID string) bool {
 		return true
 	}
 	return false
+}
+
+func (s *Server) isPersistenceWhitelisted(loginID string) bool {
+	loginID = strings.TrimSpace(loginID)
+	if loginID == "" {
+		return false
+	}
+	s.mu.RLock()
+	_, ok := s.clientAllow[loginID]
+	s.mu.RUnlock()
+	return ok
 }
 
 func (s *Server) nextMessageID() string {
@@ -1661,6 +1675,9 @@ func (s *Server) maybeRememberTopology(p Packet) {
 	if s.persistenceMode != persistenceModePersist || s.store == nil {
 		return
 	}
+	if !s.isPersistenceWhitelisted(p.From) {
+		return
+	}
 	if strings.TrimSpace(p.Group) != "" {
 		if err := s.store.rememberGroup(p.Group, p.From); err != nil {
 			log.Printf("persist group metadata failed: %v", err)
@@ -1680,6 +1697,9 @@ func (s *Server) maybeQueueForHostedUser(p Packet) {
 	if strings.TrimSpace(p.To) == "" {
 		return
 	}
+	if !s.isPersistenceWhitelisted(p.To) {
+		return
+	}
 	if err := s.store.queueMessageForUser(p.To, storedMessage{
 		ID:      p.ID,
 		From:    p.From,
@@ -1697,6 +1717,9 @@ func (s *Server) maybeQueueForHostedUser(p Packet) {
 
 func (s *Server) deliverPending(loginID string) {
 	if s.persistenceMode != persistenceModePersist || s.store == nil {
+		return
+	}
+	if !s.isPersistenceWhitelisted(loginID) {
 		return
 	}
 	for {

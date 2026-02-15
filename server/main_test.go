@@ -35,6 +35,7 @@ type testServerConfig struct {
 	maxSeenEntries  int
 	maxKnownAddrs   int
 	knownAddrTTL    time.Duration
+	clientAllow     []string
 	persistenceMode string
 	persistenceDB   string
 	persistAutoHost bool
@@ -94,6 +95,13 @@ func startTestServer(t *testing.T, localSID, advertise string, seedAddrs []strin
 	s.persistenceMode = cfg.persistenceMode
 	s.persistAutoHost = cfg.persistAutoHost
 	s.maxPendingMsgs = cfg.maxPendingMsgs
+	for _, id := range cfg.clientAllow {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		s.clientAllow[id] = struct{}{}
+	}
 	if s.persistenceMode == persistenceModePersist {
 		store, err := openSQLiteStore(cfg.persistenceDB, s.id, ownerLoginID, s.maxPendingMsgs)
 		if err != nil {
@@ -566,16 +574,25 @@ func TestPersistModeQueuesAndReplaysOfflineMessages(t *testing.T) {
 	tempDir := t.TempDir()
 	cfg.persistenceDB = tempDir + "/state.sqlite"
 
-	addr, s, stop := startTestServer(t, "s1", "", nil, cfg)
-	defer stop()
-
-	alice := newTestClient(t, addr)
-	defer alice.close()
-
+	_, alicePriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("alice key generation failed: %v", err)
+	}
 	_, bobPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("bob key generation failed: %v", err)
 	}
+	cfg.clientAllow = []string{
+		loginIDForPubKey(alicePriv.Public().(ed25519.PublicKey)),
+		loginIDForPubKey(bobPriv.Public().(ed25519.PublicKey)),
+	}
+
+	addr, s, stop := startTestServer(t, "s1", "", nil, cfg)
+	defer stop()
+
+	alice := newTestClientWithKey(t, addr, alicePriv)
+	defer alice.close()
+
 	bob1 := newTestClientWithKey(t, addr, bobPriv)
 	bobID := bob1.loginID
 	bob1.close()
@@ -610,7 +627,10 @@ func TestPersistModeCanRequirePreHostedUsers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("allowed key generation failed: %v", err)
 	}
-	cfg.preHostedUsers = []string{loginIDForPubKey(allowedPub)}
+	blockedPub := blockedPriv.Public().(ed25519.PublicKey)
+	allowedID := loginIDForPubKey(allowedPub)
+	cfg.preHostedUsers = []string{allowedID}
+	cfg.clientAllow = []string{allowedID, loginIDForPubKey(blockedPub)}
 
 	addr, _, stop := startTestServer(t, "s1", "", nil, cfg)
 	defer stop()
@@ -632,6 +652,91 @@ func TestPersistModeCanRequirePreHostedUsers(t *testing.T) {
 	}
 	if !strings.Contains(blockedResp.Body, "client access not allowed") {
 		t.Fatalf("unexpected blocked response: %+v", blockedResp)
+	}
+}
+
+func TestPersistModeStoresTopologyOnlyForWhitelistedIdentities(t *testing.T) {
+	cfg := defaultTestServerConfig()
+	cfg.persistenceMode = persistenceModePersist
+	cfg.persistAutoHost = true
+	tempDir := t.TempDir()
+	cfg.persistenceDB = tempDir + "/state.sqlite"
+
+	allowedPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("allowed key generation failed: %v", err)
+	}
+	blockedPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("blocked key generation failed: %v", err)
+	}
+	allowedID := loginIDForPubKey(allowedPub)
+	blockedID := loginIDForPubKey(blockedPub)
+	cfg.clientAllow = []string{allowedID}
+
+	_, s, stop := startTestServer(t, "s1", "", nil, cfg)
+	defer stop()
+
+	s.processSignedAction(Packet{Type: "channel_create", From: blockedID, Group: "blocked-group", Channel: "main"})
+	s.processSignedAction(Packet{Type: "channel_create", From: allowedID, Group: "allowed-group", Channel: "main"})
+
+	var blockedCount int
+	if err := s.store.db.QueryRow(`SELECT COUNT(1) FROM groups_meta WHERE group_name = ?`, "blocked-group").Scan(&blockedCount); err != nil {
+		t.Fatalf("count blocked group failed: %v", err)
+	}
+	if blockedCount != 0 {
+		t.Fatalf("expected blocked identity to skip persisted topology, got count=%d", blockedCount)
+	}
+
+	var allowedCount int
+	if err := s.store.db.QueryRow(`SELECT COUNT(1) FROM groups_meta WHERE group_name = ?`, "allowed-group").Scan(&allowedCount); err != nil {
+		t.Fatalf("count allowed group failed: %v", err)
+	}
+	if allowedCount != 1 {
+		t.Fatalf("expected whitelisted identity to persist topology, got count=%d", allowedCount)
+	}
+}
+
+func TestPersistModeQueuesOnlyForWhitelistedIdentities(t *testing.T) {
+	cfg := defaultTestServerConfig()
+	cfg.persistenceMode = persistenceModePersist
+	cfg.persistAutoHost = false
+	tempDir := t.TempDir()
+	cfg.persistenceDB = tempDir + "/state.sqlite"
+
+	allowedPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("allowed key generation failed: %v", err)
+	}
+	blockedPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("blocked key generation failed: %v", err)
+	}
+	allowedID := loginIDForPubKey(allowedPub)
+	blockedID := loginIDForPubKey(blockedPub)
+	cfg.clientAllow = []string{allowedID}
+	cfg.preHostedUsers = []string{allowedID, blockedID}
+
+	_, s, stop := startTestServer(t, "s1", "", nil, cfg)
+	defer stop()
+
+	s.maybeQueueForHostedUser(Packet{ID: "allow-1", From: "sender", To: allowedID, Body: "ok"})
+	s.maybeQueueForHostedUser(Packet{ID: "block-1", From: "sender", To: blockedID, Body: "no"})
+
+	var allowedCount int
+	if err := s.store.db.QueryRow(`SELECT COUNT(1) FROM pending_messages WHERE to_id = ?`, allowedID).Scan(&allowedCount); err != nil {
+		t.Fatalf("count allowed pending failed: %v", err)
+	}
+	if allowedCount != 1 {
+		t.Fatalf("expected whitelisted identity to have queued message, got count=%d", allowedCount)
+	}
+
+	var blockedCount int
+	if err := s.store.db.QueryRow(`SELECT COUNT(1) FROM pending_messages WHERE to_id = ?`, blockedID).Scan(&blockedCount); err != nil {
+		t.Fatalf("count blocked pending failed: %v", err)
+	}
+	if blockedCount != 0 {
+		t.Fatalf("expected non-whitelisted identity to skip queued message, got count=%d", blockedCount)
 	}
 }
 

@@ -98,14 +98,14 @@ func main() {
 	default:
 		log.Fatalf("invalid -client-mode: %s", *clientMode)
 	}
-	if s.clientMode == clientModePrivate {
-		for _, id := range strings.Split(*clientAllowCSV, ",") {
-			id = strings.TrimSpace(id)
-			if id == "" {
-				continue
-			}
-			s.clientAllow[id] = struct{}{}
+	for _, id := range strings.Split(*clientAllowCSV, ",") {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
 		}
+		s.clientAllow[id] = struct{}{}
+	}
+	if s.clientMode == clientModePrivate {
 		if len(s.clientAllow) == 0 {
 			log.Fatalf("client-mode=private requires -client-allow")
 		}
