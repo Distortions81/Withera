@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -31,6 +32,38 @@ import (
 	"withera/internal/apphome"
 	"withera/internal/netsec"
 )
+
+func isNameRuneAllowed(r rune) bool {
+	if r >= 'a' && r <= 'z' {
+		return true
+	}
+	if r >= 'A' && r <= 'Z' {
+		return true
+	}
+	if r >= '0' && r <= '9' {
+		return true
+	}
+	return r == '-' || r == '_' || r == '.'
+}
+
+func validateNodeName(kind string, value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fmt.Errorf("%s is required", kind)
+	}
+	if !utf8.ValidString(value) {
+		return fmt.Errorf("%s must be valid utf-8", kind)
+	}
+	if strings.Contains(value, "/") {
+		return fmt.Errorf("%s cannot contain '/'", kind)
+	}
+	for _, r := range value {
+		if !isNameRuneAllowed(r) {
+			return fmt.Errorf("%s contains invalid character %q", kind, r)
+		}
+	}
+	return nil
+}
 
 type Packet struct {
 	Type        string `json:"type"`
@@ -1691,14 +1724,22 @@ func (m *model) handleCommand(line string) tea.Cmd {
 		if len(parts) < 2 {
 			return logLine("usage: /group <name>")
 		}
-		m.group = strings.TrimSpace(parts[1])
+		group := strings.TrimSpace(parts[1])
+		if err := validateNodeName("group", group); err != nil {
+			return logLine(err.Error() + " (allowed: letters/numbers and - _ .)")
+		}
+		m.group = group
 		m.persistUIState()
 		return logLine("group set: " + m.group)
 	case "/channel":
 		if len(parts) < 2 {
 			return logLine("usage: /channel <name>")
 		}
-		m.channel = strings.TrimSpace(parts[1])
+		channel := strings.TrimSpace(parts[1])
+		if err := validateNodeName("channel", channel); err != nil {
+			return logLine(err.Error() + " (allowed: letters/numbers and - _ .)")
+		}
+		m.channel = channel
 		m.persistUIState()
 		return logLine("channel set: " + m.channel)
 	case "/clearctx":
@@ -1765,6 +1806,12 @@ func (m *model) handleCommand(line string) tea.Cmd {
 		}
 		group := strings.TrimSpace(parts[1])
 		channel := strings.TrimSpace(parts[2])
+		if err := validateNodeName("group", group); err != nil {
+			return logLine(err.Error() + " (allowed: letters/numbers and - _ .)")
+		}
+		if err := validateNodeName("channel", channel); err != nil {
+			return logLine(err.Error() + " (allowed: letters/numbers and - _ .)")
+		}
 		mode := strings.ToLower(strings.TrimSpace(parts[3]))
 		isPublic := mode == "public"
 		if mode != "public" && mode != "private" {
@@ -1777,7 +1824,7 @@ func (m *model) handleCommand(line string) tea.Cmd {
 		m.channel = channel
 		m.rememberGroupChannel(group, channel)
 		m.applyFocus(panelTarget{mode: panelChannel, channel: group + "/" + channel})
-		return logLine("channel created: " + group + "/" + channel + " (" + mode + ")")
+		return logLine("channel create requested: " + group + "/" + channel + " (" + mode + ")")
 	case "/invite":
 		if len(parts) < 2 {
 			return logLine("usage: /invite <login_id|alias> (uses current /group and /channel)")
@@ -1799,6 +1846,12 @@ func (m *model) handleCommand(line string) tea.Cmd {
 		}
 		group := strings.TrimSpace(parts[1])
 		channel := strings.TrimSpace(parts[2])
+		if err := validateNodeName("group", group); err != nil {
+			return logLine(err.Error() + " (allowed: letters/numbers and - _ .)")
+		}
+		if err := validateNodeName("channel", channel); err != nil {
+			return logLine(err.Error() + " (allowed: letters/numbers and - _ .)")
+		}
 		if err := m.sendSigned(Packet{Type: "channel_join", Group: group, Channel: channel}); err != nil {
 			return logLine("channel-join error: " + err.Error())
 		}
@@ -1814,6 +1867,12 @@ func (m *model) handleCommand(line string) tea.Cmd {
 		}
 		group := strings.TrimSpace(parts[1])
 		channel := strings.TrimSpace(parts[2])
+		if err := validateNodeName("group", group); err != nil {
+			return logLine(err.Error() + " (allowed: letters/numbers and - _ .)")
+		}
+		if err := validateNodeName("channel", channel); err != nil {
+			return logLine(err.Error() + " (allowed: letters/numbers and - _ .)")
+		}
 		if err := m.sendSigned(Packet{Type: "channel_leave", Group: group, Channel: channel}); err != nil {
 			return logLine("channel-leave error: " + err.Error())
 		}

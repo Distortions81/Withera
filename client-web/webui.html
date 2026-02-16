@@ -1722,10 +1722,32 @@ function updatePendingInvites(invites) {
   renderChat();
 }
 
+function validateNodeName(kind, value) {
+  const v = (value || '').trim();
+  if (!v) return `${kind} is required`;
+  if (v.includes('/')) return `${kind} cannot contain '/'`;
+  for (const ch of v) {
+    const ok =
+      (ch >= 'a' && ch <= 'z') ||
+      (ch >= 'A' && ch <= 'Z') ||
+      (ch >= '0' && ch <= '9') ||
+      ch === '-' ||
+      ch === '_' ||
+      ch === '.';
+    if (!ok) return `${kind} contains invalid character '${ch}'`;
+  }
+  return '';
+}
+
 async function createGroupFromPanel() {
   const group = (groupCreateName.value || '').trim();
   if (!group) {
     groupCreateName.focus();
+    return;
+  }
+  const groupErr = validateNodeName('group', group);
+  if (groupErr) {
+    appendInfo(`group-create failed: ${groupErr} (use letters/numbers and - _ .)`);
     return;
   }
   try {
@@ -1764,20 +1786,33 @@ async function createGroupFromPanel() {
     renderGroups(latestGroups);
     updateChatContext();
     persistContextSoon();
+    await poll();
     try {
       if (iconDraft || profileTextDraft) {
-        await post('/api/group/profile/set', {
-          group: createdGroup,
-          icon: iconDraft || '',
-          icon_set: true,
-          profile_text: profileTextDraft,
-          text_set: true
-        });
+        let lastErr = null;
+        for (let i = 0; i < 5; i++) {
+          try {
+            await post('/api/group/profile/set', {
+              group: createdGroup,
+              icon: iconDraft || '',
+              icon_set: true,
+              profile_text: profileTextDraft,
+              text_set: true
+            });
+            lastErr = null;
+            break;
+          } catch (e) {
+            lastErr = e;
+            const msg = (e && e.message) ? String(e.message) : '';
+            if (!msg.includes('group must be owned') && !msg.includes('unknown group')) throw e;
+            await new Promise((resolve) => setTimeout(resolve, 250));
+          }
+        }
+        if (lastErr) throw lastErr;
       }
     } catch (e) {
       appendInfo(`group-profile failed: ${e.message}`);
     }
-    await poll();
   } catch (e) {
     appendInfo(`group-create failed: ${e.message}`);
   }

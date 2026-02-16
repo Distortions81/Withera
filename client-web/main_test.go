@@ -29,6 +29,20 @@ func buildSignedFriendKeyBody(t *testing.T, priv ed25519.PrivateKey, e2eePub str
 	return string(b)
 }
 
+func TestValidateNameLikeNodeRejectsSpaces(t *testing.T) {
+	if err := validateNameLikeNode("group", "Lumen Clay"); err == nil {
+		t.Fatalf("expected error")
+	} else if !strings.Contains(err.Error(), "group contains invalid character") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateNameLikeNodeAllowsDotsAndDashes(t *testing.T) {
+	if err := validateNameLikeNode("group", "lumen-clay.v1_test"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestParseFriendKeyValid(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

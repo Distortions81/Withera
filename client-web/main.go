@@ -32,6 +32,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/skip2/go-qrcode"
 	"withera/internal/apphome"
@@ -2037,9 +2038,13 @@ func (c *webClient) handleGroupProfileSet(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
 		return
 	}
-	group := strings.TrimSpace(req.Group)
+	group := normalizeGroupName(req.Group)
 	if group == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "group required"})
+		return
+	}
+	if err := validateNameLikeNode("group", group); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 	icon, err := sanitizeGroupIconDataURL(req.Icon)
@@ -2239,6 +2244,38 @@ func normalizeChannelName(v string) string {
 	return v
 }
 
+func isNameRuneAllowed(r rune) bool {
+	if r >= 'a' && r <= 'z' {
+		return true
+	}
+	if r >= 'A' && r <= 'Z' {
+		return true
+	}
+	if r >= '0' && r <= '9' {
+		return true
+	}
+	return r == '-' || r == '_' || r == '.'
+}
+
+func validateNameLikeNode(kind string, value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fmt.Errorf("%s is required", kind)
+	}
+	if !utf8.ValidString(value) {
+		return fmt.Errorf("%s must be valid utf-8", kind)
+	}
+	if strings.Contains(value, "/") {
+		return fmt.Errorf("%s cannot contain '/'", kind)
+	}
+	for _, r := range value {
+		if !isNameRuneAllowed(r) {
+			return fmt.Errorf("%s contains invalid character %q", kind, r)
+		}
+	}
+	return nil
+}
+
 func channelInviteKey(from string, group string) string {
 	return strings.TrimSpace(from) + "|" + normalizeGroupName(group)
 }
@@ -2314,6 +2351,14 @@ func (c *webClient) handleGroupCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "group required"})
 		return
 	}
+	if err := validateNameLikeNode("group", group); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := validateNameLikeNode("channel", channel); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 	public := true
 	if req.Public != nil {
 		public = *req.Public
@@ -2322,7 +2367,7 @@ func (c *webClient) handleGroupCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	c.addEvent("info", fmt.Sprintf("group created: %s/%s (%s)", group, channel, map[bool]string{true: "public", false: "private"}[public]))
+	c.addEvent("info", fmt.Sprintf("group create requested: %s/%s (%s)", group, channel, map[bool]string{true: "public", false: "private"}[public]))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "group": group, "channel": channel, "public": public})
 }
 
@@ -2339,6 +2384,14 @@ func (c *webClient) handleGroupJoin(w http.ResponseWriter, r *http.Request) {
 	channel := normalizeChannelName(req.Channel)
 	if group == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "group required"})
+		return
+	}
+	if err := validateNameLikeNode("group", group); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := validateNameLikeNode("channel", channel); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 	if err := c.sendSigned(Packet{Type: "channel_join", Group: group, Channel: channel}); err != nil {
@@ -2364,6 +2417,14 @@ func (c *webClient) handleGroupSend(w http.ResponseWriter, r *http.Request) {
 	text := strings.TrimSpace(req.Text)
 	if group == "" || text == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "group and text required"})
+		return
+	}
+	if err := validateNameLikeNode("group", group); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := validateNameLikeNode("channel", channel); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 	if err := c.sendSigned(Packet{Type: "channel_send", Group: group, Channel: channel, Body: text}); err != nil {
