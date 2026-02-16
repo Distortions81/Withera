@@ -40,6 +40,7 @@ type testServerConfig struct {
 	persistenceDB         string
 	persistAutoHost       bool
 	persistPublicTopology bool
+	persistChatMessages   bool
 	maxChannelsPerGroup   int
 	maxGroupNameLen       int
 	maxChannelNameLen     int
@@ -58,6 +59,7 @@ func defaultTestServerConfig() testServerConfig {
 		persistenceMode:       persistenceModeLive,
 		persistAutoHost:       true,
 		persistPublicTopology: false,
+		persistChatMessages:   false,
 		maxChannelsPerGroup:   defaultMaxChannelsPerGroup,
 		maxGroupNameLen:       defaultMaxGroupNameRunes,
 		maxChannelNameLen:     defaultMaxChannelNameRunes,
@@ -103,6 +105,7 @@ func startTestServer(t *testing.T, localSID, advertise string, seedAddrs []strin
 	s.persistenceMode = cfg.persistenceMode
 	s.persistAutoHost = cfg.persistAutoHost
 	s.persistPublicTopology = cfg.persistPublicTopology
+	s.persistChatMessages = cfg.persistChatMessages
 	if cfg.maxChannelsPerGroup > 0 {
 		s.maxChannelsPerGroup = cfg.maxChannelsPerGroup
 	}
@@ -589,6 +592,7 @@ func TestPersistModeQueuesAndReplaysOfflineMessages(t *testing.T) {
 	cfg := defaultTestServerConfig()
 	cfg.persistenceMode = persistenceModePersist
 	cfg.persistAutoHost = true
+	cfg.persistChatMessages = true
 	tempDir := t.TempDir()
 	cfg.persistenceDB = tempDir + "/state.sqlite"
 
@@ -634,6 +638,7 @@ func TestPersistModeCanRequirePreHostedUsers(t *testing.T) {
 	cfg := defaultTestServerConfig()
 	cfg.persistenceMode = persistenceModePersist
 	cfg.persistAutoHost = false
+	cfg.persistChatMessages = true
 	tempDir := t.TempDir()
 	cfg.persistenceDB = tempDir + "/state.sqlite"
 
@@ -762,6 +767,7 @@ func TestPersistModeQueuesOnlyForWhitelistedIdentities(t *testing.T) {
 	cfg := defaultTestServerConfig()
 	cfg.persistenceMode = persistenceModePersist
 	cfg.persistAutoHost = false
+	cfg.persistChatMessages = true
 	tempDir := t.TempDir()
 	cfg.persistenceDB = tempDir + "/state.sqlite"
 
@@ -798,6 +804,36 @@ func TestPersistModeQueuesOnlyForWhitelistedIdentities(t *testing.T) {
 	}
 	if blockedCount != 0 {
 		t.Fatalf("expected non-whitelisted identity to skip queued message, got count=%d", blockedCount)
+	}
+}
+
+func TestPersistModeSkipsQueueWhenChatMessageStorageDisabled(t *testing.T) {
+	cfg := defaultTestServerConfig()
+	cfg.persistenceMode = persistenceModePersist
+	cfg.persistAutoHost = false
+	cfg.persistChatMessages = false
+	tempDir := t.TempDir()
+	cfg.persistenceDB = tempDir + "/state.sqlite"
+
+	allowedPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("allowed key generation failed: %v", err)
+	}
+	allowedID := loginIDForPubKey(allowedPub)
+	cfg.clientAllow = []string{allowedID}
+	cfg.preHostedUsers = []string{allowedID}
+
+	_, s, stop := startTestServer(t, "s1", "", nil, cfg)
+	defer stop()
+
+	s.maybeQueueForHostedUser(Packet{ID: "allow-1", From: "sender", To: allowedID, Body: "ok"})
+
+	var allowedCount int
+	if err := s.store.db.QueryRow(`SELECT COUNT(1) FROM pending_messages WHERE to_id = ?`, allowedID).Scan(&allowedCount); err != nil {
+		t.Fatalf("count allowed pending failed: %v", err)
+	}
+	if allowedCount != 0 {
+		t.Fatalf("expected disabled chat message storage to skip queueing, got count=%d", allowedCount)
 	}
 }
 

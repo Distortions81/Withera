@@ -1,0 +1,96 @@
+# Open Accord
+
+Open Accord is a decentralized chat prototype with these components:
+- `node/`: network nodes that authenticate users/peers, relay messages, and optionally persist selected state.
+- `client-web/`: local web client served from a local Go process.
+- `client-tui/`: terminal client.
+- `client-fyne/`: native desktop client (in-progress).
+
+## How It Works (End User View)
+
+1. You create or restore an identity in a client.
+2. The client connects to a node over TLS.
+3. The node sends a challenge nonce.
+4. Your client signs the challenge with your identity key.
+5. After auth, you can DM friends or join/send in groups/channels.
+6. Nodes relay signed actions across the node mesh.
+7. If persistence is enabled on a node, selected state may be stored based on node policy.
+
+## Node Features
+
+- Ed25519 challenge-response authentication for user logins.
+- Owner-scoped node identity for node-to-node trust (`<owner_login_id>:<sid>`).
+- TLS for all connections.
+- Signed packet actions for message integrity/authenticity.
+- Peer discovery and background dialing (`getaddr`/`addr`).
+- Relay mesh with dedupe and route hints.
+- Client access policy modes: `public`, `private`, `disabled`.
+- Persistence modes: `live` and `persist` (SQLite).
+- Allowlist-based persistence policy.
+- Optional public topology persistence override.
+- Offline chat queue persistence is available but default-off (`persist_chat_messages = false`).
+- Group/channel guardrails (max channel count, max name lengths).
+- Rate and size limits (msg bytes, decompress bounds, per-conn rate/burst).
+- Local stats HTTP endpoint.
+- TOML config support with CLI override precedence.
+
+## Client Features
+
+### `client-web`
+
+- Browser login/setup flow for identity select/create/restore.
+- Base58-style recovery key formatting and restore UX.
+- Backup/export for identities.
+- QR code for account recovery display.
+- Logout/switch identity flow.
+- DM + friends workflow.
+- Group/channel create, join, invite, and messaging.
+- Public group invite code support.
+- Presence and profile UX.
+- E2EE DM key management and rotation.
+
+### `client-tui`
+
+- Terminal command-driven interface.
+- Identity switch/create helpers.
+- DM, friends, profile, and presence commands.
+- Group/channel commands and invite handling.
+- E2EE key status and rotation commands.
+- Local UI context persistence.
+
+### `client-fyne` (current)
+
+- Native desktop UI scaffold.
+- Login/setup flow and active chat window foundation.
+- Ongoing parity work toward `client-web` features.
+
+## Running
+
+### Start a local node mesh
+
+```bash
+./scripts/start-peers.sh
+```
+
+This launches multiple local nodes and creates per-node runtime state under:
+- `.run/nodes/instances/<sid>/config/node.toml`
+- `.run/nodes/instances/<sid>/data/state.sqlite`
+- `.run/nodes/instances/<sid>/logs/node.log`
+
+Related scripts:
+- `./scripts/status-peers.sh`
+- `./scripts/stop-peers.sh`
+- `./scripts/reboot-peers.sh`
+
+### Run clients
+
+```bash
+go run ./client-web -addr 127.0.0.1:9101
+go run ./client-tui -addr 127.0.0.1:9101
+go run ./client-fyne
+```
+
+## Notes
+
+- This repository is in prototype phase and intentionally allows clean protocol/API breaks.
+- For deeper implementation detail, see `NODES_CURRENT_STATE.md`, `CLIENTS_CURRENT_STATE.md`, and `PROTOCOL.md`.

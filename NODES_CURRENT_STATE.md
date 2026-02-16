@@ -4,7 +4,7 @@ This document describes how nodes currently behave in this repository.
 
 ## What a node is
 
-A node is a Go server process (`./server`) that:
+A node is a Go node process (`./node`) that:
 - Authenticates user clients with signature-based login (no password/account DB).
 - Authenticates peer servers with owner-bound server identity proofs.
 - Relays signed actions across the peer mesh.
@@ -39,7 +39,7 @@ A node is a Go server process (`./server`) that:
 ## Persistence modes
 
 - `live` (default): in-memory state only.
-- `persist`: enables SQLite-backed storage (`server/persist_sqlite.go`).
+- `persist`: enables SQLite-backed storage (`node/persist_sqlite.go`).
 
 Current persisted tables include:
 - `hosted_users`
@@ -56,7 +56,7 @@ In `persist` mode, persistence is restricted to identities in `-client-allow`.
 Current behavior:
 - Non-whitelisted users can still connect in `client-mode=public`.
 - Whitelisted users are eligible for hosting/auto-hosting.
-- Offline queued delivery is only stored/replayed for whitelisted identities.
+- Offline queued delivery is only stored/replayed for whitelisted identities when `-persist-chat-messages=true` (default is `false`).
 - Group/channel topology metadata is only persisted when the acting identity is whitelisted.
 
 Optional override:
@@ -86,12 +86,12 @@ Nodes currently support signed actions and relay for:
 
 ## Important flags
 
-Common flags on `go run ./server`:
+Common flags on `go run ./node`:
 - `-config` (TOML config file path)
 - `-listen`, `-advertise`, `-peers`
 - `-sid`, `-key`, `-owner`
 - `-client-mode`, `-client-allow`
-- `-persistence-mode`, `-persistence-db`, `-persist-auto-host`, `-max-pending-msgs`
+- `-persistence-mode`, `-persistence-db`, `-persist-auto-host`, `-persist-chat-messages`, `-max-pending-msgs`
 - `-persist-public-topology`
 - `-relay`
 - Limits: `-max-msg-bytes`, `-max-uncompressed-bytes`, `-max-expand-ratio`, `-max-msgs-per-sec`, `-burst`
@@ -103,7 +103,7 @@ TOML config notes:
   - `listen`, `advertise`, `sid`, `key`
   - `peers = ["host:port", ...]`
   - `client_mode`, `client_allow`
-  - `persistence_mode`, `persistence_db`, `persist_auto_host`, `persist_public_topology`
+  - `persistence_mode`, `persistence_db`, `persist_auto_host`, `persist_public_topology`, `persist_chat_messages`
   - limit fields like `max_msg_bytes`, `max_channels_per_group`
 - CLI flags still work and override TOML values when explicitly provided.
 

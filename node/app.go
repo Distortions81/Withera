@@ -216,6 +216,7 @@ type Server struct {
 	persistenceMode       string
 	persistAutoHost       bool
 	persistPublicTopology bool
+	persistChatMessages   bool
 	maxPendingMsgs        int
 	maxChannelsPerGroup   int
 	maxGroupNameRunes     int
@@ -283,6 +284,7 @@ func NewServer(id, ownerPubKeyB64 string, ownerPriv ed25519.PrivateKey, advertis
 		persistenceMode:       persistenceModeLive,
 		persistAutoHost:       true,
 		persistPublicTopology: false,
+		persistChatMessages:   false,
 		maxPendingMsgs:        500,
 		maxChannelsPerGroup:   defaultMaxChannelsPerGroup,
 		maxGroupNameRunes:     defaultMaxGroupNameRunes,
@@ -1852,6 +1854,9 @@ func (s *Server) maybeRememberTopology(p Packet) {
 
 func (s *Server) maybeQueueForHostedUser(p Packet) {
 	if s.persistenceMode != persistenceModePersist || s.store == nil {
+		return
+	}
+	if !s.persistChatMessages {
 		return
 	}
 	if strings.TrimSpace(p.To) == "" {

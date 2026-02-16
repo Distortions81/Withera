@@ -19,6 +19,7 @@ client_mode = "public"
 peers = ["127.0.0.1:9102", "127.0.0.1:9103"]
 max_channels_per_group = 77
 persist_public_topology = true
+persist_chat_messages = true
 `
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write config failed: %v", err)
@@ -39,6 +40,9 @@ persist_public_topology = true
 	}
 	if cfg.PersistPublicTopo == nil || !*cfg.PersistPublicTopo {
 		t.Fatalf("persist_public_topology mismatch")
+	}
+	if cfg.PersistChatMsgs == nil || !*cfg.PersistChatMsgs {
+		t.Fatalf("persist_chat_messages mismatch")
 	}
 }
 

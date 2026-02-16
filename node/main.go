@@ -40,6 +40,7 @@ func main() {
 	persistenceDB := flag.String("persistence-db", "", "sqlite database path (used when persistence-mode=persist)")
 	persistAutoHost := flag.Bool("persist-auto-host", true, "auto-register authenticated users as hosted users in persist mode")
 	persistPublicTopology := flag.Bool("persist-public-topology", false, "persist group/channel metadata for all authenticated users in persist mode (not limited by client-allow)")
+	persistChatMessages := flag.Bool("persist-chat-messages", false, "persist offline direct/group chat messages in persist mode")
 	maxPendingMsgs := flag.Int("max-pending-msgs", 500, "maximum queued offline messages per hosted user in persist mode")
 	maxChannelsPerGroup := flag.Int("max-channels-per-group", defaultMaxChannelsPerGroup, "maximum channels allowed per group")
 	maxGroupNameLen := flag.Int("max-group-name-len", defaultMaxGroupNameRunes, "maximum group name length in characters")
@@ -83,6 +84,7 @@ func main() {
 			"persistence-db":          persistenceDB,
 			"persist-auto-host":       persistAutoHost,
 			"persist-public-topology": persistPublicTopology,
+			"persist-chat-messages":   persistChatMessages,
 			"max-pending-msgs":        maxPendingMsgs,
 			"max-channels-per-group":  maxChannelsPerGroup,
 			"max-group-name-len":      maxGroupNameLen,
@@ -170,6 +172,7 @@ func main() {
 
 	s.persistAutoHost = *persistAutoHost
 	s.persistPublicTopology = *persistPublicTopology
+	s.persistChatMessages = *persistChatMessages
 	s.maxPendingMsgs = *maxPendingMsgs
 	if *maxChannelsPerGroup <= 0 {
 		log.Fatalf("invalid -max-channels-per-group: must be > 0")
@@ -209,7 +212,7 @@ func main() {
 				log.Printf("sqlite close error: %v", err)
 			}
 		}()
-		log.Printf("persistence: mode=%s db=%s max-pending-msgs=%d auto-host=%t public-topology=%t", s.persistenceMode, dbPath, s.maxPendingMsgs, s.persistAutoHost, s.persistPublicTopology)
+		log.Printf("persistence: mode=%s db=%s max-pending-msgs=%d auto-host=%t public-topology=%t chat-messages=%t", s.persistenceMode, dbPath, s.maxPendingMsgs, s.persistAutoHost, s.persistPublicTopology, s.persistChatMessages)
 	} else {
 		log.Printf("persistence: mode=%s", s.persistenceMode)
 	}

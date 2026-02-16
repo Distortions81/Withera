@@ -3,11 +3,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-PID_DIR="$ROOT_DIR/.run/peers/pids"
-LOG_DIR="$ROOT_DIR/.run/peers/logs"
+PID_DIR="$ROOT_DIR/.run/nodes/pids"
+INSTANCES_DIR="$ROOT_DIR/.run/nodes/instances"
 
 if [[ ! -d "$PID_DIR" ]]; then
-  echo "no peers started"
+  echo "no nodes started"
   exit 0
 fi
 
@@ -20,7 +20,7 @@ for pid_file in "$PID_DIR"/*.pid; do
   else
     echo "$sid: stopped"
   fi
-  log_file="$LOG_DIR/$sid.log"
+  log_file="$INSTANCES_DIR/$sid/logs/node.log"
   if [[ -f "$log_file" ]]; then
     echo "  log: $log_file"
   fi

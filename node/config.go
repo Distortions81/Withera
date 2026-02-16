@@ -33,6 +33,7 @@ type nodeConfig struct {
 	PersistenceDB     string `toml:"persistence_db"`
 	PersistAutoHost   *bool  `toml:"persist_auto_host"`
 	PersistPublicTopo *bool  `toml:"persist_public_topology"`
+	PersistChatMsgs   *bool  `toml:"persist_chat_messages"`
 	MaxPendingMsgs    *int   `toml:"max_pending_msgs"`
 
 	MaxChannelsPerGroup *int `toml:"max_channels_per_group"`
@@ -164,6 +165,9 @@ func applyConfigToFlags(cfg nodeConfig, fs *flag.FlagSet, isSet map[string]bool,
 		return err
 	}
 	if err := setBool("persist-public-topology", cfg.PersistPublicTopo); err != nil {
+		return err
+	}
+	if err := setBool("persist-chat-messages", cfg.PersistChatMsgs); err != nil {
 		return err
 	}
 	if err := setInt("max-pending-msgs", cfg.MaxPendingMsgs); err != nil {

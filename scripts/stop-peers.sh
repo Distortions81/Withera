@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-PID_DIR="$ROOT_DIR/.run/peers/pids"
+PID_DIR="$ROOT_DIR/.run/nodes/pids"
 
 if [[ ! -d "$PID_DIR" ]]; then
   echo "no pid directory: $PID_DIR"
@@ -13,7 +13,7 @@ fi
 shopt -s nullglob
 pid_files=("$PID_DIR"/*.pid)
 if (( ${#pid_files[@]} == 0 )); then
-  echo "no peers running"
+  echo "no nodes running"
   exit 0
 fi
 

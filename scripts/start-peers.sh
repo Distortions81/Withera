@@ -4,24 +4,21 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-NUM_PEERS="${NUM_PEERS:-3}"
+NUM_NODES="${NUM_NODES:-3}"
 BASE_PORT="${BASE_PORT:-9101}"
 SID_PREFIX="${SID_PREFIX:-peer}"
 HOST="${HOST:-127.0.0.1}"
 
-RUNTIME_DIR="$ROOT_DIR/.run/peers"
+RUNTIME_DIR="$ROOT_DIR/.run/nodes"
 BIN_DIR="$ROOT_DIR/.run/bin"
 PID_DIR="$RUNTIME_DIR/pids"
-LOG_DIR="$RUNTIME_DIR/logs"
-KEY_DIR="$RUNTIME_DIR/keys"
-STATE_DIR="$RUNTIME_DIR/state"
-CONFIG_DIR="$RUNTIME_DIR/config"
-SERVER_BIN="$BIN_DIR/goaccord-server"
+INSTANCES_DIR="$RUNTIME_DIR/instances"
+NODE_BIN="$BIN_DIR/goaccord-node"
 
-mkdir -p "$PID_DIR" "$LOG_DIR" "$KEY_DIR" "$BIN_DIR" "$STATE_DIR" "$CONFIG_DIR"
+mkdir -p "$PID_DIR" "$INSTANCES_DIR" "$BIN_DIR"
 
 # Build once per start to pick up latest node code.
-go build -o "$SERVER_BIN" "$ROOT_DIR/server"
+go build -o "$NODE_BIN" "$ROOT_DIR/node"
 
 is_running() {
   local pid="$1"
@@ -51,7 +48,7 @@ start_node() {
   fi
 
   local cmd=(
-    "$SERVER_BIN"
+    "$NODE_BIN"
     -config "$config_file"
   )
   nohup "${cmd[@]}" >"$log_file" 2>&1 &
@@ -60,13 +57,20 @@ start_node() {
   echo "started $sid using $config_file (pid $pid)"
 }
 
-for ((i=1; i<=NUM_PEERS; i++)); do
+for ((i=1; i<=NUM_NODES; i++)); do
   sid="${SID_PREFIX}${i}"
-  log_file="$LOG_DIR/$sid.log"
-  key_file="$KEY_DIR/$sid-owner-key.json"
+  node_dir="$INSTANCES_DIR/$sid"
+  config_dir="$node_dir/config"
+  data_dir="$node_dir/data"
+  log_dir="$node_dir/logs"
+  mkdir -p "$config_dir" "$data_dir" "$log_dir"
+
+  log_file="$log_dir/node.log"
+  key_file="$config_dir/owner-key.json"
+  db_file="$data_dir/state.sqlite"
   listen_addr=":$((BASE_PORT + i - 1))"
   advertise_addr="$(peer_addr "$i")"
-  config_file="$CONFIG_DIR/$sid.toml"
+  config_file="$config_dir/node.toml"
 
   peers=()
   if (( i > 1 )); then
@@ -81,6 +85,9 @@ for ((i=1; i<=NUM_PEERS; i++)); do
     echo "advertise = \"$advertise_addr\""
     echo "sid = \"$sid\""
     echo "key = \"$key_file\""
+    echo "persistence_mode = \"persist\""
+    echo "persistence_db = \"$db_file\""
+    echo "persist_chat_messages = false"
     if (( ${#peers[@]} > 0 )); then
       printf "peers = ["
       for ((p=0; p<${#peers[@]}; p++)); do
