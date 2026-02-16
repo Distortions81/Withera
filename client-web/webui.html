@@ -1621,10 +1621,6 @@ function renderTargets(targets, pendingFriends) {
     if (unread > 0) {
       nameWrap.appendChild(createUnreadBadge(unread));
     }
-    const status = document.createElement('span');
-    const state = (t.online === 'online') ? 'online' : 'offline';
-    status.textContent = state;
-    status.className = statusClass(state);
     const controls = document.createElement('div');
     controls.className = 'friend-controls';
     const info = document.createElement('button');
@@ -1638,7 +1634,14 @@ function renderTargets(targets, pendingFriends) {
       openProfileCard(t.id, info);
     };
     controls.appendChild(info);
-    controls.appendChild(status);
+    const onlineRaw = (t.online || '').trim().toLowerCase();
+    if (onlineRaw === 'online' || onlineRaw === 'invisible') {
+      const status = document.createElement('span');
+      const state = onlineRaw;
+      status.textContent = state;
+      status.className = statusClass(state);
+      controls.appendChild(status);
+    }
     controls.appendChild(createCopyIDControl(t.user_id || t.id));
     const head = document.createElement('div');
     head.className = 'friend-head';
@@ -2067,6 +2070,9 @@ async function bootstrap() {
   renderGroups(latestGroups);
   updateChatContext();
   await post('/api/presence/check', {});
+  // Give node/client handshake and friend sync a moment, then refresh presence again.
+  setTimeout(() => { post('/api/presence/check', {}).catch(() => {}); }, 1200);
+  setTimeout(() => { post('/api/presence/check', {}).catch(() => {}); }, 3200);
 }
 
 let lastPresenceCheckAt = 0;

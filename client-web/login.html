@@ -86,6 +86,38 @@
       font-size:13px;
       font-weight:600;
     }
+    .status {
+      min-height:18px;
+      color:#8ad7ff;
+      font-size:13px;
+      font-weight:600;
+      display:flex;
+      align-items:center;
+      gap:8px;
+    }
+    .status-spin {
+      width:14px;
+      height:14px;
+      border-radius:50%;
+      border:2px solid rgba(138,215,255,.35);
+      border-top-color:#8ad7ff;
+      animation:spin 0.8s linear infinite;
+      flex:0 0 auto;
+    }
+    .status-cancel {
+      width:auto;
+      min-width:0;
+      padding:4px 10px;
+      border-radius:999px;
+      border:1px solid rgba(255,255,255,.2);
+      background:rgba(255,255,255,.06);
+      color:#e6edf3;
+      font-size:12px;
+      cursor:pointer;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
     .list {
       border-radius:16px;
       border:1px solid rgba(255,255,255,.08);
@@ -299,6 +331,11 @@
           </div>
           <p class="sub">Select one identity and hit the login button. Use the helpers to create, backup, restore, or delete.</p>
           <div id="setupErr" class="error"></div>
+          <div id="setupStatus" class="status" hidden>
+            <span id="setupStatusSpinner" class="status-spin" aria-hidden="true"></span>
+            <span id="setupStatusText">Connecting...</span>
+            <button id="setupConnectCancel" class="status-cancel" type="button">Cancel</button>
+          </div>
           <div id="setupList" class="list" aria-live="polite"></div>
           <div class="control-row">
             <button id="setupConnect" class="btn btn-main">Login</button>
@@ -369,6 +406,9 @@
 <script>
 const setupList = document.getElementById('setupList');
 const setupErr = document.getElementById('setupErr');
+const setupStatus = document.getElementById('setupStatus');
+const setupStatusText = document.getElementById('setupStatusText');
+const setupConnectCancel = document.getElementById('setupConnectCancel');
 const setupRecoveryInput = document.getElementById('setupRecoveryInput');
 const recoveryOverlay = document.getElementById('recoveryOverlay');
 const recoveryMeta = document.getElementById('recoveryMeta');
@@ -387,6 +427,8 @@ let recoveryResolver = null;
 let selectedIdentityEntry = null;
 let deleteTargetPath = '';
 let shareToastTimer = null;
+let connectBusy = false;
+let connectAbortController = null;
 
 async function post(url, body) {
   const res = await fetch(url, {
@@ -500,6 +542,36 @@ async function refreshSetupUI() {
   return st;
 }
 
+function setConnectBusy(on, message) {
+  connectBusy = !!on;
+  if (setupStatus) {
+    if (connectBusy) {
+      setupStatus.hidden = false;
+      if (setupStatusText) setupStatusText.textContent = message || 'Connecting...';
+      if (setupConnectCancel) setupConnectCancel.hidden = false;
+    } else {
+      setupStatus.hidden = true;
+      if (setupStatusText) setupStatusText.textContent = 'Connecting...';
+      if (setupConnectCancel) setupConnectCancel.hidden = true;
+    }
+  }
+  const ids = [
+    'setupConnect', 'setupCreate', 'setupBackup', 'restoreToggle',
+    'setupDelete', 'setupShare', 'setupRestore',
+    'recoveryClose', 'recoveryCopy', 'recoveryContinue',
+    'deleteCancel', 'deleteConfirm'
+  ];
+  for (const id of ids) {
+    const el = document.getElementById(id);
+    if (el) el.disabled = connectBusy;
+  }
+  if (setupRecoveryInput) setupRecoveryInput.disabled = connectBusy;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function showShareToast() {
   if (!shareToast) return;
   shareToast.hidden = false;
@@ -517,9 +589,36 @@ async function connectSelectedIdentity() {
     setupErr.textContent = 'Select an identity first.';
     return;
   }
+  if (connectBusy) return;
   setupErr.textContent = '';
-  await post('/api/setup/connect', {path: selectedSetupPath});
-  window.location.href = '/app';
+  setConnectBusy(true, 'Connecting...');
+  connectAbortController = new AbortController();
+  const started = Date.now();
+  try {
+    const res = await fetch('/api/setup/connect', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({path: selectedSetupPath}),
+      signal: connectAbortController.signal,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || ('http ' + res.status));
+    const elapsed = Date.now() - started;
+    if (elapsed < 1000) {
+      await sleep(1000 - elapsed);
+    }
+    window.location.href = '/app';
+  } catch (err) {
+    if (err && err.name === 'AbortError') {
+      setupErr.textContent = 'connect canceled';
+      setConnectBusy(false);
+      return;
+    }
+    setConnectBusy(false);
+    throw err;
+  } finally {
+    connectAbortController = null;
+  }
 }
 
 async function createIdentityFromSetup() {
@@ -537,8 +636,7 @@ async function createIdentityFromSetup() {
   selectedSetupPath = created.path || '';
   await refreshSetupUI();
   if (shouldConnect && selectedSetupPath) {
-    await post('/api/setup/connect', {path: selectedSetupPath});
-    window.location.href = '/app';
+    await connectSelectedIdentity();
   }
 }
 
@@ -608,6 +706,14 @@ document.getElementById('setupConnect').onclick = async () => {
     setupErr.textContent = e.message || 'connect failed';
   }
 };
+
+if (setupConnectCancel) {
+  setupConnectCancel.onclick = () => {
+    if (connectAbortController) {
+      connectAbortController.abort();
+    }
+  };
+}
 
 document.getElementById('setupCreate').onclick = async () => {
   try {

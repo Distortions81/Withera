@@ -289,7 +289,8 @@ type groupEntry struct {
 }
 
 type webClient struct {
-	mu sync.Mutex
+	mu      sync.Mutex
+	writeMu sync.Mutex
 
 	enc     *json.Encoder
 	conn    net.Conn
@@ -317,6 +318,8 @@ type webClient struct {
 	profileRequested      map[string]int64
 	presence              map[string]string
 	presenceTTL           map[string]int
+	presenceExpires       map[string]int64
+	presenceRequested     map[string]int64
 	presenceVisible       bool
 	presenceTTLSec        int
 	friends               map[string]struct{}
@@ -362,6 +365,9 @@ const (
 	publicInviteCodeVersion   = 1
 	profileRefreshTTL         = 6 * time.Hour
 	profileRequestMinInterval = 30 * time.Second
+	presenceRefreshInterval   = 30 * time.Second
+	presenceRequestMinGap     = 20 * time.Second
+	presenceExpiryGrace       = 30 * time.Second
 	groupProfileTextMaxRunes  = 2048
 )
 
@@ -577,9 +583,14 @@ func (c *webClient) nextMessageID() string {
 }
 
 func (c *webClient) sendSignedWithID(p Packet) (string, error) {
+	c.mu.Lock()
+	loginID := c.loginID
+	pubB64 := c.pubB64
+	priv := c.priv
+	c.mu.Unlock()
 	p.ID = c.nextMessageID()
-	p.From = c.loginID
-	p.PubKey = c.pubB64
+	p.From = loginID
+	p.PubKey = pubB64
 	if p.CreatedAt <= 0 {
 		p.CreatedAt = time.Now().UnixMilli()
 	}
@@ -592,17 +603,27 @@ func (c *webClient) sendSignedWithID(p Packet) (string, error) {
 		p.Compression = comp
 		p.USize = usize
 	}
-	sig, err := signAction(c.priv, p)
+	sig, err := signAction(priv, p)
 	if err != nil {
 		return "", err
 	}
 	p.Sig = sig
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if err := c.enc.Encode(p); err != nil {
+	if err := c.writePacket(p); err != nil {
 		return "", err
 	}
 	return p.ID, nil
+}
+
+func (c *webClient) writePacket(p Packet) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	c.mu.Lock()
+	enc := c.enc
+	c.mu.Unlock()
+	if enc == nil {
+		return fmt.Errorf("not connected")
+	}
+	return enc.Encode(p)
 }
 
 func (c *webClient) sendSigned(p Packet) error {
@@ -732,9 +753,56 @@ func (c *webClient) requestPresence(target string) {
 	if !looksLikeLoginID(target) || target == c.loginID {
 		return
 	}
+	_ = c.writePacket(Packet{Type: "presence_get", To: target})
+}
+
+func (c *webClient) maybeRequestPresence(target string) {
+	target = strings.TrimSpace(target)
+	if !looksLikeLoginID(target) || target == c.loginID {
+		return
+	}
+	now := time.Now().Unix()
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	_ = c.enc.Encode(Packet{Type: "presence_get", To: target})
+	if c.presenceRequested == nil {
+		c.presenceRequested = make(map[string]int64)
+	}
+	lastReq := c.presenceRequested[target]
+	if lastReq > 0 && now-lastReq < int64(presenceRequestMinGap/time.Second) {
+		c.mu.Unlock()
+		return
+	}
+	c.presenceRequested[target] = now
+	c.mu.Unlock()
+	c.requestPresence(target)
+	// Cross-node fallback: presence_get can be node-local, but ping is routed.
+	_ = c.sendSigned(Packet{Type: "ping", To: target, Body: "presence_probe"})
+}
+
+func (c *webClient) refreshPresenceState() {
+	now := time.Now().Unix()
+	toCheck := make([]string, 0)
+	c.mu.Lock()
+	for _, id := range c.knownPeerIDsLocked() {
+		state := strings.TrimSpace(c.presence[id])
+		exp := c.presenceExpires[id]
+		if state == "online" && exp > 0 && now >= exp+int64(presenceExpiryGrace/time.Second) {
+			c.presence[id] = "offline"
+			state = "offline"
+		}
+		if state == "online" {
+			if exp <= 0 || (exp-now) <= int64(presenceRefreshInterval/time.Second) {
+				toCheck = append(toCheck, id)
+			}
+			continue
+		}
+		if state == "" || state == "unknown" {
+			toCheck = append(toCheck, id)
+		}
+	}
+	c.mu.Unlock()
+	for _, id := range toCheck {
+		c.maybeRequestPresence(id)
+	}
 }
 
 func normalizePresenceTTLSec(ttl int) int {
@@ -782,8 +850,19 @@ func (c *webClient) setPresence(loginID string, state string, ttl int) {
 	}
 	c.mu.Lock()
 	c.presence[loginID] = state
+	if ttl <= 0 {
+		if prev := c.presenceTTL[loginID]; prev > 0 {
+			ttl = prev
+		} else if state == "online" {
+			ttl = defaultPresenceTTLSec
+		}
+	}
 	if ttl > 0 {
-		c.presenceTTL[loginID] = normalizePresenceTTLSec(ttl)
+		normTTL := normalizePresenceTTLSec(ttl)
+		c.presenceTTL[loginID] = normTTL
+		c.presenceExpires[loginID] = time.Now().Unix() + int64(normTTL)
+	} else {
+		delete(c.presenceExpires, loginID)
 	}
 	c.mu.Unlock()
 }
@@ -1639,7 +1718,7 @@ func (c *webClient) reconnectLoop() {
 		}
 		for _, id := range peers {
 			c.requestProfile(id)
-			c.requestPresence(id)
+			c.maybeRequestPresence(id)
 		}
 		for _, group := range groups {
 			c.requestGroupProfile(group)
@@ -2462,7 +2541,7 @@ func (c *webClient) handleFriendAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.requestProfile(target)
-	c.requestPresence(target)
+	c.maybeRequestPresence(target)
 	c.addEvent("info", "friend request sent to "+c.displayPeer(target))
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
@@ -2485,7 +2564,7 @@ func (c *webClient) handleFriendAccept(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.requestProfile(target)
-	c.requestPresence(target)
+	c.maybeRequestPresence(target)
 	c.mu.Lock()
 	delete(c.pendingFriends, target)
 	c.mu.Unlock()
@@ -2646,13 +2725,13 @@ func (c *webClient) handlePresenceCheck(w http.ResponseWriter, r *http.Request) 
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unknown recipient"})
 			return
 		}
-		c.requestPresence(target)
+		c.maybeRequestPresence(target)
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 		return
 	}
 	targets := c.dmTargets()
 	for _, t := range targets {
-		c.requestPresence(t.ID)
+		c.maybeRequestPresence(t.ID)
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
@@ -3912,6 +3991,8 @@ func newWebClientForIdentity(serverAddr string, home string, keyPath string, con
 		profileRequested:      make(map[string]int64),
 		presence:              make(map[string]string),
 		presenceTTL:           make(map[string]int),
+		presenceExpires:       make(map[string]int64),
+		presenceRequested:     make(map[string]int64),
 		presenceVisible:       true,
 		presenceTTLSec:        defaultPresenceTTLSec,
 		friends:               make(map[string]struct{}),
@@ -3988,7 +4069,7 @@ func newWebClientForIdentity(serverAddr string, home string, keyPath string, con
 	}
 	for _, id := range client.knownPeerIDs() {
 		client.requestProfile(id)
-		client.requestPresence(id)
+		client.maybeRequestPresence(id)
 	}
 	for group := range client.groups {
 		client.maybeRequestGroupProfile(group)
@@ -3996,16 +4077,20 @@ func newWebClientForIdentity(serverAddr string, home string, keyPath string, con
 
 	go client.networkLoop(events)
 	go func() {
-		t := time.NewTicker(presenceKeepaliveInterval)
-		defer t.Stop()
+		keepaliveTicker := time.NewTicker(presenceKeepaliveInterval)
+		refreshTicker := time.NewTicker(presenceRefreshInterval)
+		defer keepaliveTicker.Stop()
+		defer refreshTicker.Stop()
 		for {
 			select {
 			case <-client.stopCh:
 				return
-			case <-t.C:
+			case <-keepaliveTicker.C:
 				if err := client.sendPresenceKeepalive(); err != nil {
 					client.addEvent("info", "presence keepalive failed: "+err.Error())
 				}
+			case <-refreshTicker.C:
+				client.refreshPresenceState()
 			}
 		}
 	}()

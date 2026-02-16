@@ -1268,6 +1268,42 @@ func (s *Server) handlePresenceKeepalive(from string, body string) {
 	s.mu.Lock()
 	s.presence[from] = st
 	s.mu.Unlock()
+	s.notifyFriendsPresence(from)
+}
+
+func (s *Server) notifyFriendsPresence(loginID string) {
+	loginID = strings.TrimSpace(loginID)
+	if loginID == "" {
+		return
+	}
+	resp := s.snapshotPresence(loginID)
+	bodyBytes, err := json.Marshal(resp)
+	if err != nil {
+		return
+	}
+	body := string(bodyBytes)
+
+	s.mu.RLock()
+	links := s.friends[loginID]
+	friendIDs := make([]string, 0, len(links))
+	for friendID := range links {
+		friendID = strings.TrimSpace(friendID)
+		if friendID == "" || friendID == loginID {
+			continue
+		}
+		friendIDs = append(friendIDs, friendID)
+	}
+	s.mu.RUnlock()
+
+	for _, friendID := range friendIDs {
+		s.notifyUserOrQueue(Packet{
+			Type:   "presence_data",
+			From:   loginID,
+			To:     friendID,
+			Body:   body,
+			Origin: s.id,
+		})
+	}
 }
 
 func (s *Server) snapshotPresence(loginID string) presenceData {
@@ -2733,6 +2769,7 @@ func (s *Server) handleUser(loginID string, c *Conn, reader *bufio.Reader, rl *r
 
 	_ = c.Send(Packet{Type: "ok", ID: loginID, Body: "authenticated"})
 	log.Printf("user connected: %s", loginID)
+	s.notifyFriendsPresence(loginID)
 	s.deliverPending(loginID)
 	s.replayPersistedMemberships(loginID)
 
