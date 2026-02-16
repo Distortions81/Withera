@@ -128,14 +128,17 @@ type savedNickname struct {
 }
 
 type savedProfile struct {
-	LoginID     string `json:"login_id"`
-	ProfileText string `json:"profile_text"`
-	RefreshedAt int64  `json:"refreshed_at,omitempty"`
+	LoginID       string `json:"login_id"`
+	ProfileText   string `json:"profile_text"`
+	ProfileImage  string `json:"profile_image,omitempty"`
+	ImageChecksum string `json:"image_checksum,omitempty"`
+	RefreshedAt   int64  `json:"refreshed_at,omitempty"`
 }
 
 type profilePayload struct {
-	Nickname    string `json:"nickname,omitempty"`
-	ProfileText string `json:"profile_text,omitempty"`
+	Nickname     string `json:"nickname,omitempty"`
+	ProfileText  string `json:"profile_text,omitempty"`
+	ProfileImage string `json:"profile_image,omitempty"`
 }
 
 type presenceKeepalivePayload struct {
@@ -218,17 +221,19 @@ func uiStatePathForProfile(profilePath string) string {
 }
 
 type webEvent struct {
-	Seq        int64  `json:"seq"`
-	Kind       string `json:"kind"`
-	Text       string `json:"text"`
-	TS         string `json:"ts"`
-	ActorID    string `json:"actor_id,omitempty"`
-	ActorLabel string `json:"actor_label,omitempty"`
-	Mode       string `json:"mode,omitempty"`    // dm|group
-	Target     string `json:"target,omitempty"`  // dm target
-	Group      string `json:"group,omitempty"`   // group context
-	Channel    string `json:"channel,omitempty"` // channel context
-	InviteKey  string `json:"invite_key,omitempty"`
+	Seq                  int64  `json:"seq"`
+	Kind                 string `json:"kind"`
+	Text                 string `json:"text"`
+	TS                   string `json:"ts"`
+	ActorID              string `json:"actor_id,omitempty"`
+	ActorLabel           string `json:"actor_label,omitempty"`
+	ActorProfileImage    string `json:"actor_profile_image,omitempty"`
+	ActorProfileChecksum string `json:"actor_profile_checksum,omitempty"`
+	Mode                 string `json:"mode,omitempty"`    // dm|group
+	Target               string `json:"target,omitempty"`  // dm target
+	Group                string `json:"group,omitempty"`   // group context
+	Channel              string `json:"channel,omitempty"` // channel context
+	InviteKey            string `json:"invite_key,omitempty"`
 }
 
 type dmTarget struct {
@@ -237,6 +242,8 @@ type dmTarget struct {
 	Label         string `json:"label"`
 	Nickname      string `json:"nickname,omitempty"`
 	ProfileText   string `json:"profile_text,omitempty"`
+	ProfileImage  string `json:"profile_image,omitempty"`
+	ImageChecksum string `json:"image_checksum,omitempty"`
 	LastRefreshed int64  `json:"last_refreshed,omitempty"`
 	Online        string `json:"online,omitempty"`
 	OnlineTTLSec  int    `json:"online_ttl_sec,omitempty"`
@@ -291,27 +298,30 @@ type webClient struct {
 	e2eePath      string
 	e2eeStatePath string
 
-	contacts         map[string]string
-	nicknames        map[string]string
-	peerProfiles     map[string]string
-	profileRefreshed map[string]int64
-	presence         map[string]string
-	presenceTTL      map[string]int
-	presenceVisible  bool
-	presenceTTLSec   int
-	friends          map[string]struct{}
-	pendingFriends   map[string]int64
-	pendingInvites   map[string]channelInviteEntry
-	groups           map[string]map[string]struct{}
-	ownedGroups      map[string]struct{}
-	groupOwners      map[string]string
-	groupIcons       map[string]string
-	lastContext      chatContext
-	pendingPings     map[string]int64
-	seenChatIDs      map[string]struct{}
-	peerE2EEMulti    map[string][]string
-	friendKeyNonces  map[string]map[string]int64
-	e2eeIssues       map[string]string
+	contacts           map[string]string
+	nicknames          map[string]string
+	peerProfiles       map[string]string
+	peerProfileImages  map[string]string
+	peerImageChecksums map[string]string
+	profileRefreshed   map[string]int64
+	profileRequested   map[string]int64
+	presence           map[string]string
+	presenceTTL        map[string]int
+	presenceVisible    bool
+	presenceTTLSec     int
+	friends            map[string]struct{}
+	pendingFriends     map[string]int64
+	pendingInvites     map[string]channelInviteEntry
+	groups             map[string]map[string]struct{}
+	ownedGroups        map[string]struct{}
+	groupOwners        map[string]string
+	groupIcons         map[string]string
+	lastContext        chatContext
+	pendingPings       map[string]int64
+	seenChatIDs        map[string]struct{}
+	peerE2EEMulti      map[string][]string
+	friendKeyNonces    map[string]map[string]int64
+	e2eeIssues         map[string]string
 
 	events  []webEvent
 	nextSeq int64
@@ -337,6 +347,8 @@ const (
 	friendKeyMaxAge           = 30 * 24 * time.Hour
 	maxPeerKeysPerLogin       = 8
 	publicInviteCodeVersion   = 1
+	profileRefreshTTL         = 6 * time.Hour
+	profileRequestMinInterval = 30 * time.Second
 )
 
 func stamp() string { return time.Now().Format("15:04:05") }
@@ -348,6 +360,16 @@ func minInt(a, b int) int {
 	return b
 }
 
+func reconnectBackoff(attempt int) time.Duration {
+	if attempt <= 0 {
+		return 0
+	}
+	// 1s, 2s, 4s, 8s, 16s, 32s (capped) + up to 500ms jitter.
+	base := time.Second * time.Duration(1<<minInt(attempt-1, 5))
+	jitter := time.Duration(time.Now().UnixNano()%int64(500*time.Millisecond))
+	return base + jitter
+}
+
 func (c *webClient) addEvent(kind string, text string) {
 	c.addEventWithActor(kind, text, "")
 }
@@ -357,10 +379,23 @@ func (c *webClient) addEventWithActor(kind string, text string, actorID string) 
 	defer c.mu.Unlock()
 	c.nextSeq++
 	actorLabel := ""
+	actorProfileImage := ""
+	actorProfileChecksum := ""
 	if strings.TrimSpace(actorID) != "" {
 		actorLabel = c.displayPeerLocked(actorID)
+		actorProfileImage = strings.TrimSpace(c.peerProfileImages[strings.TrimSpace(actorID)])
+		actorProfileChecksum = strings.TrimSpace(c.peerImageChecksums[strings.TrimSpace(actorID)])
 	}
-	c.events = append(c.events, webEvent{Seq: c.nextSeq, Kind: kind, Text: text, TS: stamp(), ActorID: strings.TrimSpace(actorID), ActorLabel: actorLabel})
+	c.events = append(c.events, webEvent{
+		Seq:                  c.nextSeq,
+		Kind:                 kind,
+		Text:                 text,
+		TS:                   stamp(),
+		ActorID:              strings.TrimSpace(actorID),
+		ActorLabel:           actorLabel,
+		ActorProfileImage:    actorProfileImage,
+		ActorProfileChecksum: actorProfileChecksum,
+	})
 	if len(c.events) > 1000 {
 		c.events = c.events[len(c.events)-1000:]
 	}
@@ -370,25 +405,37 @@ func (c *webClient) addChatEventWithActor(text string, actorID string, mode stri
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.nextSeq++
+	actorID = strings.TrimSpace(actorID)
 	actorLabel := ""
-	if strings.TrimSpace(actorID) != "" {
+	actorProfileImage := ""
+	actorProfileChecksum := ""
+	if actorID != "" {
 		actorLabel = c.displayPeerLocked(actorID)
+		if actorID == c.loginID {
+			actorProfileImage = strings.TrimSpace(c.profileImage)
+			actorProfileChecksum = profileImageChecksum(actorProfileImage)
+		} else {
+			actorProfileImage = strings.TrimSpace(c.peerProfileImages[actorID])
+			actorProfileChecksum = strings.TrimSpace(c.peerImageChecksums[actorID])
+		}
 	}
 	mode = strings.ToLower(strings.TrimSpace(mode))
 	if mode != "dm" && mode != "group" {
 		mode = ""
 	}
 	e := webEvent{
-		Seq:        c.nextSeq,
-		Kind:       "chat",
-		Text:       text,
-		TS:         stamp(),
-		ActorID:    strings.TrimSpace(actorID),
-		ActorLabel: actorLabel,
-		Mode:       mode,
-		Target:     strings.TrimSpace(target),
-		Group:      strings.TrimSpace(group),
-		Channel:    strings.TrimSpace(channel),
+		Seq:                  c.nextSeq,
+		Kind:                 "chat",
+		Text:                 text,
+		TS:                   stamp(),
+		ActorID:              actorID,
+		ActorLabel:           actorLabel,
+		ActorProfileImage:    actorProfileImage,
+		ActorProfileChecksum: actorProfileChecksum,
+		Mode:                 mode,
+		Target:               strings.TrimSpace(target),
+		Group:                strings.TrimSpace(group),
+		Channel:              strings.TrimSpace(channel),
 	}
 	if e.Mode == "group" && e.Channel == "" {
 		e.Channel = "default"
@@ -405,15 +452,17 @@ func (c *webClient) addInviteChatEvent(text string, actorID string, target strin
 	c.nextSeq++
 	actorID = strings.TrimSpace(actorID)
 	e := webEvent{
-		Seq:        c.nextSeq,
-		Kind:       "chat",
-		Text:       text,
-		TS:         stamp(),
-		ActorID:    actorID,
-		ActorLabel: c.displayPeerLocked(actorID),
-		Mode:       "dm",
-		Target:     strings.TrimSpace(target),
-		InviteKey:  strings.TrimSpace(inviteKey),
+		Seq:                  c.nextSeq,
+		Kind:                 "chat",
+		Text:                 text,
+		TS:                   stamp(),
+		ActorID:              actorID,
+		ActorLabel:           c.displayPeerLocked(actorID),
+		ActorProfileImage:    strings.TrimSpace(c.peerProfileImages[actorID]),
+		ActorProfileChecksum: strings.TrimSpace(c.peerImageChecksums[actorID]),
+		Mode:                 "dm",
+		Target:               strings.TrimSpace(target),
+		InviteKey:            strings.TrimSpace(inviteKey),
 	}
 	c.events = append(c.events, e)
 	if len(c.events) > 1000 {
@@ -467,6 +516,43 @@ func (c *webClient) resolveRecipient(token string) (string, bool) {
 	return "", false
 }
 
+func (c *webClient) ensureContact(loginID string) {
+	loginID = strings.TrimSpace(loginID)
+	if !looksLikeLoginID(loginID) {
+		return
+	}
+
+	c.mu.Lock()
+	if loginID == c.loginID {
+		c.mu.Unlock()
+		return
+	}
+	for _, id := range c.contacts {
+		if id == loginID {
+			c.mu.Unlock()
+			return
+		}
+	}
+	base := shortID(loginID)
+	alias := base
+	for i := 2; ; i++ {
+		if cur, ok := c.contacts[alias]; !ok {
+			c.contacts[alias] = loginID
+			break
+		} else if cur == loginID {
+			c.mu.Unlock()
+			return
+		}
+		alias = fmt.Sprintf("%s-%d", base, i)
+	}
+	contacts := cloneStringMap(c.contacts)
+	c.mu.Unlock()
+
+	if err := saveContacts(c.contactsPath, contacts); err != nil {
+		c.addEvent("info", "contacts persist failed: "+err.Error())
+	}
+}
+
 func (c *webClient) nextMessageID() string {
 	n := c.counter.Add(1)
 	prefix := c.loginID
@@ -516,6 +602,39 @@ func (c *webClient) requestProfile(target string) {
 		return
 	}
 	_ = c.sendSigned(Packet{Type: "profile_get", To: target})
+}
+
+func profileImageChecksum(dataURL string) string {
+	dataURL = strings.TrimSpace(dataURL)
+	if dataURL == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(dataURL))
+	return hex.EncodeToString(sum[:])
+}
+
+func (c *webClient) maybeRequestProfile(target string) {
+	target = strings.TrimSpace(target)
+	if !looksLikeLoginID(target) || target == c.loginID {
+		return
+	}
+	now := time.Now()
+	nowSec := now.Unix()
+	nowUnix := now.Unix()
+	c.mu.Lock()
+	lastReq := c.profileRequested[target]
+	lastRefresh := c.profileRefreshed[target]
+	if lastReq > 0 && nowUnix-lastReq < int64(profileRequestMinInterval/time.Second) {
+		c.mu.Unlock()
+		return
+	}
+	if lastRefresh > 0 && now.Sub(time.Unix(lastRefresh, 0)) < profileRefreshTTL {
+		c.mu.Unlock()
+		return
+	}
+	c.profileRequested[target] = nowSec
+	c.mu.Unlock()
+	c.requestProfile(target)
 }
 
 func (c *webClient) requestPresence(target string) {
@@ -581,7 +700,7 @@ func (c *webClient) setPresence(loginID string, state string, ttl int) {
 
 func (c *webClient) publishOwnProfile() error {
 	c.mu.Lock()
-	payload := profilePayload{Nickname: c.displayName, ProfileText: c.profileText}
+	payload := profilePayload{Nickname: c.displayName, ProfileText: c.profileText, ProfileImage: c.profileImage}
 	c.mu.Unlock()
 	b, err := json.Marshal(payload)
 	if err != nil {
@@ -774,9 +893,11 @@ func (c *webClient) upsertNickname(loginID, nick string) {
 	profileText := c.profileText
 	nickCopy := cloneStringMap(c.nicknames)
 	peerCopy := cloneStringMap(c.peerProfiles)
+	peerImgCopy := cloneStringMap(c.peerProfileImages)
+	peerSumCopy := cloneStringMap(c.peerImageChecksums)
 	refCopy := cloneInt64Map(c.profileRefreshed)
 	c.mu.Unlock()
-	_ = saveProfile(c.profilePath, displayName, profileText, "", false, nickCopy, peerCopy, refCopy)
+	_ = saveProfile(c.profilePath, displayName, profileText, "", false, nickCopy, peerCopy, peerImgCopy, peerSumCopy, refCopy)
 }
 
 func (c *webClient) upsertPeerProfile(loginID, text string) {
@@ -792,9 +913,44 @@ func (c *webClient) upsertPeerProfile(loginID, text string) {
 	profileText := c.profileText
 	nickCopy := cloneStringMap(c.nicknames)
 	peerCopy := cloneStringMap(c.peerProfiles)
+	peerImgCopy := cloneStringMap(c.peerProfileImages)
+	peerSumCopy := cloneStringMap(c.peerImageChecksums)
 	refCopy := cloneInt64Map(c.profileRefreshed)
 	c.mu.Unlock()
-	_ = saveProfile(c.profilePath, displayName, profileText, "", false, nickCopy, peerCopy, refCopy)
+	_ = saveProfile(c.profilePath, displayName, profileText, "", false, nickCopy, peerCopy, peerImgCopy, peerSumCopy, refCopy)
+}
+
+func (c *webClient) upsertPeerProfileImage(loginID, image string) {
+	loginID = strings.TrimSpace(loginID)
+	image = strings.TrimSpace(image)
+	if !looksLikeLoginID(loginID) {
+		return
+	}
+	if image != "" {
+		safe, err := sanitizeProfileImageDataURL(image)
+		if err != nil {
+			return
+		}
+		image = safe
+	}
+	c.mu.Lock()
+	if image == "" {
+		delete(c.peerProfileImages, loginID)
+		delete(c.peerImageChecksums, loginID)
+	} else {
+		c.peerProfileImages[loginID] = image
+		c.peerImageChecksums[loginID] = profileImageChecksum(image)
+	}
+	c.profileRefreshed[loginID] = time.Now().Unix()
+	displayName := c.displayName
+	profileText := c.profileText
+	nickCopy := cloneStringMap(c.nicknames)
+	peerCopy := cloneStringMap(c.peerProfiles)
+	peerImgCopy := cloneStringMap(c.peerProfileImages)
+	peerSumCopy := cloneStringMap(c.peerImageChecksums)
+	refCopy := cloneInt64Map(c.profileRefreshed)
+	c.mu.Unlock()
+	_ = saveProfile(c.profilePath, displayName, profileText, "", false, nickCopy, peerCopy, peerImgCopy, peerSumCopy, refCopy)
 }
 
 func (c *webClient) rememberGroup(group string, channel string) {
@@ -826,6 +982,81 @@ func (c *webClient) forgetGroup(group string) {
 	delete(c.groupIcons, group)
 	c.mu.Unlock()
 	c.persistUIState()
+}
+
+func (c *webClient) forgetGroupChannel(group string, channel string) bool {
+	group = strings.TrimSpace(group)
+	channel = normalizeChannelName(channel)
+	if group == "" {
+		return false
+	}
+	changed := false
+	c.mu.Lock()
+	channels := c.groups[group]
+	if channels != nil {
+		if _, ok := channels[channel]; ok {
+			delete(channels, channel)
+			changed = true
+		}
+		if len(channels) == 0 {
+			delete(c.groups, group)
+			delete(c.ownedGroups, group)
+			delete(c.groupOwners, group)
+			delete(c.groupIcons, group)
+			changed = true
+		}
+	}
+	c.mu.Unlock()
+	if changed {
+		c.persistUIState()
+	}
+	return changed
+}
+
+func (c *webClient) pruneUnknownGroupOrChannel(errBody string) bool {
+	body := strings.ToLower(strings.TrimSpace(errBody))
+	unknownGroup := strings.Contains(body, "unknown group")
+	unknownChannel := strings.Contains(body, "unknown channel")
+	if !unknownGroup && !unknownChannel {
+		return false
+	}
+
+	c.mu.Lock()
+	ctx := c.lastContext
+	group := strings.TrimSpace(ctx.Group)
+	channel := normalizeChannelName(ctx.Channel)
+	c.mu.Unlock()
+	if group == "" {
+		return false
+	}
+
+	changed := false
+	if unknownGroup {
+		c.forgetGroup(group)
+		changed = true
+	} else if unknownChannel {
+		changed = c.forgetGroupChannel(group, channel)
+	}
+
+	if !changed {
+		return false
+	}
+
+	c.mu.Lock()
+	if c.lastContext.Mode == "group" && strings.TrimSpace(c.lastContext.Group) == group {
+		channels := c.groups[group]
+		if channels == nil || len(channels) == 0 {
+			c.lastContext = chatContext{}
+		} else {
+			cur := normalizeChannelName(c.lastContext.Channel)
+			if _, ok := channels[cur]; !ok {
+				c.lastContext.Channel = "default"
+			}
+		}
+	}
+	c.mu.Unlock()
+	c.persistUIState()
+	return true
 }
 
 func messageMeta(p Packet) string {
@@ -881,6 +1112,7 @@ func (c *webClient) networkLoop(ch <-chan netMsg) {
 			}
 			if looksLikeLoginID(p.From) {
 				c.setPresence(p.From, "online", defaultPresenceTTLSec)
+				c.maybeRequestProfile(p.From)
 			}
 			line := p.Body
 			if p.Type == "deliver" && strings.TrimSpace(p.Group) == "" && strings.TrimSpace(p.Channel) == "" && strings.TrimSpace(p.From) != c.loginID {
@@ -911,6 +1143,7 @@ func (c *webClient) networkLoop(ch <-chan netMsg) {
 		case "ping":
 			if looksLikeLoginID(p.From) {
 				c.setPresence(p.From, "online", defaultPresenceTTLSec)
+				c.maybeRequestProfile(p.From)
 			}
 			if meta := messageMeta(p); meta != "" {
 				c.addEvent("info", fmt.Sprintf("ping from=%s %s", c.displayPeer(p.From), meta))
@@ -922,6 +1155,7 @@ func (c *webClient) networkLoop(ch <-chan netMsg) {
 		case "pong":
 			if looksLikeLoginID(p.From) {
 				c.setPresence(p.From, "online", defaultPresenceTTLSec)
+				c.maybeRequestProfile(p.From)
 			}
 			var payload struct {
 				PingID        string `json:"ping_id"`
@@ -952,6 +1186,7 @@ func (c *webClient) networkLoop(ch <-chan netMsg) {
 		case "friend_request":
 			if p.To == c.loginID && looksLikeLoginID(p.From) {
 				c.setPresence(p.From, "online", defaultPresenceTTLSec)
+				c.ensureContact(p.From)
 				c.mu.Lock()
 				c.pendingFriends[p.From] = time.Now().Unix()
 				c.mu.Unlock()
@@ -975,6 +1210,7 @@ func (c *webClient) networkLoop(ch <-chan netMsg) {
 		case "friend_update", "group_invite", "channel_update", "channel_joined", "group_invite_rejected":
 			if looksLikeLoginID(p.From) {
 				c.setPresence(p.From, "online", defaultPresenceTTLSec)
+				c.maybeRequestProfile(p.From)
 			}
 			if strings.TrimSpace(p.Group) != "" {
 				if p.Type != "group_invite" {
@@ -1051,6 +1287,7 @@ func (c *webClient) networkLoop(ch <-chan netMsg) {
 			}
 			if p.Type == "friend_update" {
 				if looksLikeLoginID(p.From) {
+					c.ensureContact(p.From)
 					if k, err := c.consumeFriendKey(p.From, p.Body); err != nil {
 						c.mu.Lock()
 						c.e2eeIssues[p.From] = err.Error()
@@ -1075,6 +1312,7 @@ func (c *webClient) networkLoop(ch <-chan netMsg) {
 					c.friends[other] = struct{}{}
 					delete(c.pendingFriends, other)
 					c.mu.Unlock()
+					c.ensureContact(other)
 				}
 			}
 			c.addEvent("info", fmt.Sprintf("[%s] from=%s to=%s %s", p.Type, c.displayPeer(p.From), c.displayPeer(p.To), strings.TrimSpace(p.Body)))
@@ -1100,6 +1338,10 @@ func (c *webClient) networkLoop(ch <-chan netMsg) {
 			if text != "" {
 				c.upsertPeerProfile(p.From, text)
 			}
+			c.upsertPeerProfileImage(p.From, prof.ProfileImage)
+			c.mu.Lock()
+			delete(c.profileRequested, strings.TrimSpace(p.From))
+			c.mu.Unlock()
 			line := "profile " + c.displayPeer(p.From)
 			if nick != "" {
 				line += " nick=" + nick
@@ -1107,7 +1349,7 @@ func (c *webClient) networkLoop(ch <-chan netMsg) {
 			if text != "" {
 				line += " bio=" + text
 			}
-			c.addEvent("info", line)
+			c.addEventWithActor("info", line, p.From)
 		case "presence_data":
 			var pd presenceDataPayload
 			if err := json.Unmarshal([]byte(strings.TrimSpace(p.Body)), &pd); err == nil {
@@ -1116,6 +1358,9 @@ func (c *webClient) networkLoop(ch <-chan netMsg) {
 				c.setPresence(p.From, p.Body, 0)
 			}
 		case "error":
+			if c.pruneUnknownGroupOrChannel(p.Body) {
+				c.addEvent("info", "removed stale group/channel from UI")
+			}
 			c.addEvent("info", "node error: "+p.Body)
 		default:
 			raw, _ := json.Marshal(p)
@@ -1155,9 +1400,8 @@ func (c *webClient) reconnectLoop() {
 		if manual {
 			return
 		}
-		if attempt > 0 {
-			backoff := time.Second * time.Duration(1<<minInt(attempt, 5))
-			time.Sleep(backoff)
+		if delay := reconnectBackoff(attempt); delay > 0 {
+			time.Sleep(delay)
 		}
 		conn, enc, events, loginID, pubB64, err := runAuth(c.serverAddr, c.priv)
 		if err != nil {
@@ -1294,6 +1538,8 @@ func (c *webClient) dmTargets() []dmTarget {
 			Label:         c.displayPeerLocked(id),
 			Nickname:      strings.TrimSpace(c.nicknames[id]),
 			ProfileText:   strings.TrimSpace(c.peerProfiles[id]),
+			ProfileImage:  strings.TrimSpace(c.peerProfileImages[id]),
+			ImageChecksum: strings.TrimSpace(c.peerImageChecksums[id]),
 			LastRefreshed: c.profileRefreshed[id],
 			Online:        strings.TrimSpace(c.presence[id]),
 			OnlineTTLSec:  c.presenceTTL[id],
@@ -1325,6 +1571,8 @@ func (c *webClient) pendingFriendRequests() []dmTarget {
 			Label:         c.displayPeerLocked(id),
 			Nickname:      strings.TrimSpace(c.nicknames[id]),
 			ProfileText:   strings.TrimSpace(c.peerProfiles[id]),
+			ProfileImage:  strings.TrimSpace(c.peerProfileImages[id]),
+			ImageChecksum: strings.TrimSpace(c.peerImageChecksums[id]),
 			LastRefreshed: c.pendingFriends[id],
 			Online:        strings.TrimSpace(c.presence[id]),
 			OnlineTTLSec:  c.presenceTTL[id],
@@ -1489,6 +1737,8 @@ func (c *webClient) profileCard(loginID string) dmTarget {
 		Label:         c.displayPeerLocked(loginID),
 		Nickname:      strings.TrimSpace(c.nicknames[loginID]),
 		ProfileText:   strings.TrimSpace(c.peerProfiles[loginID]),
+		ProfileImage:  strings.TrimSpace(c.peerProfileImages[loginID]),
+		ImageChecksum: strings.TrimSpace(c.peerImageChecksums[loginID]),
 		LastRefreshed: c.profileRefreshed[loginID],
 		Online:        strings.TrimSpace(c.presence[loginID]),
 		OnlineTTLSec:  c.presenceTTL[loginID],
@@ -1680,12 +1930,6 @@ func (c *webClient) handleGroupCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	c.rememberGroup(group, channel)
-	c.mu.Lock()
-	c.ownedGroups[group] = struct{}{}
-	c.groupOwners[group] = c.loginID
-	c.mu.Unlock()
-	c.persistUIState()
 	c.addEvent("info", fmt.Sprintf("group created: %s/%s (%s)", group, channel, map[bool]string{true: "public", false: "private"}[public]))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "group": group, "channel": channel, "public": public})
 }
@@ -1709,7 +1953,6 @@ func (c *webClient) handleGroupJoin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	c.rememberGroup(group, channel)
 	c.addEvent("info", fmt.Sprintf("group join requested: %s/%s", group, channel))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "group": group, "channel": channel})
 }
@@ -1735,7 +1978,6 @@ func (c *webClient) handleGroupSend(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	c.rememberGroup(group, channel)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -1791,7 +2033,6 @@ func (c *webClient) handleGroupInvite(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no valid recipients"})
 		return
 	}
-	c.rememberGroup(group, "default")
 	c.addEvent("info", fmt.Sprintf("group invite sent: %s recipients=%d", group, sent))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "sent": sent})
 }
@@ -1843,7 +2084,6 @@ func (c *webClient) handleGroupJoinCode(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	c.rememberGroup(parsed.Group, "default")
 	c.addEvent("info", fmt.Sprintf("public invite redeemed: %s (joining public channels)", parsed.Group))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "group": parsed.Group})
 }
@@ -1876,7 +2116,6 @@ func (c *webClient) handleInviteAccept(w http.ResponseWriter, r *http.Request) {
 	c.mu.Lock()
 	delete(c.pendingInvites, channelInviteKey(from, group))
 	c.mu.Unlock()
-	c.rememberGroup(group, channel)
 	c.addEvent("info", fmt.Sprintf("group invite accepted: %s", group))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "group": group, "channel": channel})
 }
@@ -1968,9 +2207,8 @@ func (c *webClient) handleFriendAdd(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	if c.displayPeer(target) == shortID(target) {
-		c.requestProfile(target)
-	}
+	c.requestProfile(target)
+	c.requestPresence(target)
 	c.addEvent("info", "friend request sent to "+c.displayPeer(target))
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
@@ -1992,9 +2230,8 @@ func (c *webClient) handleFriendAccept(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	if c.displayPeer(target) == shortID(target) {
-		c.requestProfile(target)
-	}
+	c.requestProfile(target)
+	c.requestPresence(target)
 	c.mu.Lock()
 	delete(c.pendingFriends, target)
 	c.mu.Unlock()
@@ -2105,10 +2342,12 @@ func (c *webClient) handleProfileSet(w http.ResponseWriter, r *http.Request) {
 	}
 	nicks := cloneStringMap(c.nicknames)
 	peers := cloneStringMap(c.peerProfiles)
+	peerImgs := cloneStringMap(c.peerProfileImages)
+	peerSums := cloneStringMap(c.peerImageChecksums)
 	refs := cloneInt64Map(c.profileRefreshed)
 	profileImage := c.profileImage
 	c.mu.Unlock()
-	if err := saveProfile(c.profilePath, name, text, profileImage, req.ProfileImageSet, nicks, peers, refs); err != nil {
+	if err := saveProfile(c.profilePath, name, text, profileImage, req.ProfileImageSet, nicks, peers, peerImgs, peerSums, refs); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
@@ -2425,20 +2664,22 @@ func saveUIState(path string, groups []groupEntry, ctx chatContext, groupIcons m
 	return writeFileAtomic(path, payload, 0o600)
 }
 
-func loadProfile(path string) (string, string, string, map[string]string, map[string]string, map[string]int64, error) {
+func loadProfile(path string) (string, string, string, map[string]string, map[string]string, map[string]string, map[string]string, map[string]int64, error) {
 	nicks := make(map[string]string)
 	peers := make(map[string]string)
+	peerImages := make(map[string]string)
+	peerChecksums := make(map[string]string)
 	refs := make(map[string]int64)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return "", "", "", nicks, peers, refs, nil
+			return "", "", "", nicks, peers, peerImages, peerChecksums, refs, nil
 		}
-		return "", "", "", nil, nil, nil, err
+		return "", "", "", nil, nil, nil, nil, nil, err
 	}
 	var f profileFile
 	if err := json.Unmarshal(data, &f); err != nil {
-		return "", "", "", nil, nil, nil, err
+		return "", "", "", nil, nil, nil, nil, nil, err
 	}
 	for _, n := range f.PeerNicknames {
 		id := strings.TrimSpace(n.LoginID)
@@ -2451,19 +2692,32 @@ func loadProfile(path string) (string, string, string, map[string]string, map[st
 	for _, p := range f.PeerProfiles {
 		id := strings.TrimSpace(p.LoginID)
 		text := strings.TrimSpace(p.ProfileText)
-		if !looksLikeLoginID(id) || text == "" {
+		if !looksLikeLoginID(id) {
 			continue
 		}
-		peers[id] = text
+		if text != "" {
+			peers[id] = text
+		}
+		image := strings.TrimSpace(p.ProfileImage)
+		if image != "" {
+			peerImages[id] = image
+		}
+		sum := strings.TrimSpace(p.ImageChecksum)
+		if sum == "" && image != "" {
+			sum = profileImageChecksum(image)
+		}
+		if sum != "" {
+			peerChecksums[id] = sum
+		}
 		if p.RefreshedAt > 0 {
 			refs[id] = p.RefreshedAt
 		}
 	}
-	return strings.TrimSpace(f.DisplayName), strings.TrimSpace(f.ProfileText), strings.TrimSpace(f.ProfileImage), nicks, peers, refs, nil
+	return strings.TrimSpace(f.DisplayName), strings.TrimSpace(f.ProfileText), strings.TrimSpace(f.ProfileImage), nicks, peers, peerImages, peerChecksums, refs, nil
 }
 
-func saveProfile(path string, displayName string, profileText string, profileImage string, profileImageSet bool, nicknames map[string]string, peerProfiles map[string]string, refreshed map[string]int64) error {
-	existingName, existingText, existingImage, existingNicks, existingPeers, existingRefs, err := loadProfile(path)
+func saveProfile(path string, displayName string, profileText string, profileImage string, profileImageSet bool, nicknames map[string]string, peerProfiles map[string]string, peerProfileImages map[string]string, peerImageChecksums map[string]string, refreshed map[string]int64) error {
+	existingName, existingText, existingImage, existingNicks, existingPeers, existingPeerImages, existingChecksums, existingRefs, err := loadProfile(path)
 	if err != nil {
 		return err
 	}
@@ -2480,6 +2734,20 @@ func saveProfile(path string, displayName string, profileText string, profileIma
 	}
 	for id, text := range peerProfiles {
 		mergedPeers[id] = text
+	}
+	mergedPeerImages := make(map[string]string, len(existingPeerImages)+len(peerProfileImages))
+	for id, img := range existingPeerImages {
+		mergedPeerImages[id] = img
+	}
+	for id, img := range peerProfileImages {
+		mergedPeerImages[id] = img
+	}
+	mergedChecksums := make(map[string]string, len(existingChecksums)+len(peerImageChecksums))
+	for id, sum := range existingChecksums {
+		mergedChecksums[id] = sum
+	}
+	for id, sum := range peerImageChecksums {
+		mergedChecksums[id] = sum
 	}
 	mergedRefs := make(map[string]int64, len(existingRefs)+len(refreshed))
 	for id, ts := range existingRefs {
@@ -2502,10 +2770,10 @@ func saveProfile(path string, displayName string, profileText string, profileIma
 	if profileImageSet {
 		image = strings.TrimSpace(profileImage)
 	}
-	return writeProfileAtomic(path, name, text, image, mergedNicks, mergedPeers, mergedRefs)
+	return writeProfileAtomic(path, name, text, image, mergedNicks, mergedPeers, mergedPeerImages, mergedChecksums, mergedRefs)
 }
 
-func writeProfileAtomic(path string, displayName string, profileText string, profileImage string, nicknames map[string]string, peerProfiles map[string]string, refreshed map[string]int64) error {
+func writeProfileAtomic(path string, displayName string, profileText string, profileImage string, nicknames map[string]string, peerProfiles map[string]string, peerProfileImages map[string]string, peerImageChecksums map[string]string, refreshed map[string]int64) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
@@ -2527,18 +2795,38 @@ func writeProfileAtomic(path string, displayName string, profileText string, pro
 		}
 		f.PeerNicknames = append(f.PeerNicknames, savedNickname{LoginID: id, Nickname: nick})
 	}
-	peerIDs := make([]string, 0, len(peerProfiles))
+	peerIDs := make([]string, 0, len(peerProfiles)+len(peerProfileImages))
 	for id := range peerProfiles {
+		peerIDs = append(peerIDs, id)
+	}
+	for id := range peerProfileImages {
+		if _, ok := peerProfiles[id]; ok {
+			continue
+		}
 		peerIDs = append(peerIDs, id)
 	}
 	sort.Strings(peerIDs)
 	f.PeerProfiles = make([]savedProfile, 0, len(peerIDs))
 	for _, id := range peerIDs {
 		text := strings.TrimSpace(peerProfiles[id])
-		if text == "" || !looksLikeLoginID(id) {
+		image := strings.TrimSpace(peerProfileImages[id])
+		if text == "" && image == "" {
 			continue
 		}
-		f.PeerProfiles = append(f.PeerProfiles, savedProfile{LoginID: id, ProfileText: text, RefreshedAt: refreshed[id]})
+		if !looksLikeLoginID(id) {
+			continue
+		}
+		checksum := strings.TrimSpace(peerImageChecksums[id])
+		if checksum == "" && image != "" {
+			checksum = profileImageChecksum(image)
+		}
+		f.PeerProfiles = append(f.PeerProfiles, savedProfile{
+			LoginID:       id,
+			ProfileText:   text,
+			ProfileImage:  image,
+			ImageChecksum: checksum,
+			RefreshedAt:   refreshed[id],
+		})
 	}
 	payload, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
@@ -3135,7 +3423,7 @@ func listIdentityCandidates(home string, currentPath string) []identityCandidate
 		}
 		pub := priv.Public().(ed25519.PublicKey)
 		loginID := loginIDForPubKey(pub)
-		name, _, _, _, _, _, _ := loadProfile(profilePathForKey(home, p))
+		name, _, _, _, _, _, _, _, _ := loadProfile(profilePathForKey(home, p))
 		out = append(out, identityCandidate{Path: p, LoginID: loginID, UserID: userIDForLoginID(loginID), Name: strings.TrimSpace(name)})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -3268,7 +3556,7 @@ func newWebClientForIdentity(serverAddr string, home string, keyPath string, con
 		_ = conn.Close()
 		return nil, fmt.Errorf("contacts load failed: %w", err)
 	}
-	displayName, profileText, profileImage, nicknames, peerProfiles, profileRefreshed, err := loadProfile(profilePath)
+	displayName, profileText, profileImage, nicknames, peerProfiles, peerProfileImages, peerImageChecksums, profileRefreshed, err := loadProfile(profilePath)
 	if err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("profile load failed: %w", err)
@@ -3281,51 +3569,54 @@ func newWebClientForIdentity(serverAddr string, home string, keyPath string, con
 	}
 	if strings.TrimSpace(displayName) == "" {
 		displayName = defaultDisplayName()
-		if err := saveProfile(profilePath, displayName, profileText, profileImage, false, nicknames, peerProfiles, profileRefreshed); err != nil {
+		if err := saveProfile(profilePath, displayName, profileText, profileImage, false, nicknames, peerProfiles, peerProfileImages, peerImageChecksums, profileRefreshed); err != nil {
 			_ = conn.Close()
 			return nil, fmt.Errorf("profile save failed: %w", err)
 		}
 	}
 
 	client := &webClient{
-		enc:              enc,
-		conn:             conn,
-		priv:             priv,
-		pubB64:           pubB64,
-		e2ee:             e2eePriv,
-		e2eeB64:          e2eePubB64,
-		loginID:          loginID,
-		displayName:      displayName,
-		profileText:      profileText,
-		profileImage:     profileImage,
-		contactsPath:     contactsPath,
-		profilePath:      profilePath,
-		uiStatePath:      uiStatePath,
-		e2eePath:         e2eePath,
-		e2eeStatePath:    e2eeStatePath,
-		contacts:         contacts,
-		nicknames:        nicknames,
-		peerProfiles:     peerProfiles,
-		profileRefreshed: profileRefreshed,
-		presence:         make(map[string]string),
-		presenceTTL:      make(map[string]int),
-		presenceVisible:  true,
-		presenceTTLSec:   defaultPresenceTTLSec,
-		friends:          make(map[string]struct{}),
-		pendingFriends:   make(map[string]int64),
-		pendingInvites:   make(map[string]channelInviteEntry),
-		groups:           make(map[string]map[string]struct{}),
-		ownedGroups:      make(map[string]struct{}),
-		groupOwners:      make(map[string]string),
-		groupIcons:       make(map[string]string),
-		lastContext:      savedCtx,
-		pendingPings:     make(map[string]int64),
-		seenChatIDs:      make(map[string]struct{}),
-		peerE2EEMulti:    peerE2EEMulti,
-		friendKeyNonces:  friendKeyNonces,
-		e2eeIssues:       make(map[string]string),
-		serverAddr:       serverAddr,
-		stopCh:           make(chan struct{}),
+		enc:                enc,
+		conn:               conn,
+		priv:               priv,
+		pubB64:             pubB64,
+		e2ee:               e2eePriv,
+		e2eeB64:            e2eePubB64,
+		loginID:            loginID,
+		displayName:        displayName,
+		profileText:        profileText,
+		profileImage:       profileImage,
+		contactsPath:       contactsPath,
+		profilePath:        profilePath,
+		uiStatePath:        uiStatePath,
+		e2eePath:           e2eePath,
+		e2eeStatePath:      e2eeStatePath,
+		contacts:           contacts,
+		nicknames:          nicknames,
+		peerProfiles:       peerProfiles,
+		peerProfileImages:  peerProfileImages,
+		peerImageChecksums: peerImageChecksums,
+		profileRefreshed:   profileRefreshed,
+		profileRequested:   make(map[string]int64),
+		presence:           make(map[string]string),
+		presenceTTL:        make(map[string]int),
+		presenceVisible:    true,
+		presenceTTLSec:     defaultPresenceTTLSec,
+		friends:            make(map[string]struct{}),
+		pendingFriends:     make(map[string]int64),
+		pendingInvites:     make(map[string]channelInviteEntry),
+		groups:             make(map[string]map[string]struct{}),
+		ownedGroups:        make(map[string]struct{}),
+		groupOwners:        make(map[string]string),
+		groupIcons:         make(map[string]string),
+		lastContext:        savedCtx,
+		pendingPings:       make(map[string]int64),
+		seenChatIDs:        make(map[string]struct{}),
+		peerE2EEMulti:      peerE2EEMulti,
+		friendKeyNonces:    friendKeyNonces,
+		e2eeIssues:         make(map[string]string),
+		serverAddr:         serverAddr,
+		stopCh:             make(chan struct{}),
 	}
 	for _, g := range savedGroups {
 		group := strings.TrimSpace(g.Name)
@@ -3391,12 +3682,12 @@ func newWebClientForIdentity(serverAddr string, home string, keyPath string, con
 }
 
 func main() {
-	serverAddr := flag.String("addr", "127.0.0.1:9101", "node address")
-	webAddr := flag.String("web", "127.0.0.1:0", "local web UI listen address (default ephemeral port)")
+	serverAddr := flag.String("addr", "127.0.0.1:9101", "node address for chat traffic")
+	webAddr := flag.String("web", "127.0.0.1:8080", "local web UI listen address")
 	keyPath := flag.String("key", "", "private key file path")
 	contactsPath := flag.String("contacts", "", "contacts file path")
 	profilePath := flag.String("profile", "", "profile file path")
-	autoOpen := flag.Bool("open", true, "auto-open browser")
+	autoOpen := flag.Bool("open", false, "auto-open browser")
 	flag.Parse()
 	keyPathExplicit := false
 	flag.Visit(func(f *flag.Flag) {
@@ -3731,8 +4022,47 @@ func main() {
 	mux.HandleFunc("/api/presence/set", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handlePresenceSet(w, r) }))
 	mux.HandleFunc("/api/profile/card", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleProfileCard(w, r) }))
 
+	shouldRetryAutoConnect := func(err error) bool {
+		if err == nil {
+			return false
+		}
+		msg := strings.ToLower(strings.TrimSpace(err.Error()))
+		return strings.Contains(msg, "connect/auth failed") ||
+			strings.Contains(msg, "connection refused") ||
+			strings.Contains(msg, "i/o timeout") ||
+			strings.Contains(msg, "no route to host")
+	}
+
 	if err := tryAutoConnect(activeKeyPath); err != nil {
 		log.Printf("auto-connect skipped: %v", err)
+		if shouldRetryAutoConnect(err) {
+			go func() {
+				attempt := 1
+				for {
+					if delay := reconnectBackoff(attempt); delay > 0 {
+						time.Sleep(delay)
+					}
+					appMu.RLock()
+					connected := client != nil
+					key := strings.TrimSpace(activeKeyPath)
+					appMu.RUnlock()
+					if connected {
+						return
+					}
+					if key == "" {
+						attempt++
+						continue
+					}
+					if retryErr := tryAutoConnect(key); retryErr != nil {
+						attempt++
+						log.Printf("auto-connect retry failed (attempt %d): %v", attempt, retryErr)
+						continue
+					}
+					log.Printf("auto-connect recovered")
+					return
+				}
+			}()
+		}
 	}
 
 	ln, err := net.Listen("tcp", *webAddr)

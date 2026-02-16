@@ -53,6 +53,11 @@ const (
 	defaultMaxChannelsPerGroup  = 64
 	defaultMaxGroupNameRunes    = 64
 	defaultMaxChannelNameRunes  = 48
+	defaultMaxPersistedFriends  = 256
+	defaultMaxPersistedChannelsPerUser = 512
+	defaultProfileCacheTTL      = 90 * 24 * time.Hour
+	maxProfileNicknameRunes     = 64
+	maxProfileTextRunes         = 2048
 	maxProfileImageBytes        = 16 * 1024
 )
 
@@ -239,6 +244,7 @@ type Server struct {
 	friendAdds   map[string]map[string]struct{}
 	channels     map[string]*ChannelState
 	profiles     map[string]profilePayload
+	profileUpdated map[string]int64
 	presence     map[string]presenceState
 	routes       map[string]userRoute
 	startedAt    time.Time
@@ -304,6 +310,7 @@ func NewServer(id, ownerPubKeyB64 string, ownerPriv ed25519.PrivateKey, advertis
 		friendAdds:            make(map[string]map[string]struct{}),
 		channels:              make(map[string]*ChannelState),
 		profiles:              make(map[string]profilePayload),
+		profileUpdated:        make(map[string]int64),
 		presence:              make(map[string]presenceState),
 		routes:                make(map[string]userRoute),
 		startedAt:             time.Now(),
@@ -1350,6 +1357,19 @@ func validateProfileImageDataURL(dataURL string, maxBytes int) error {
 	return nil
 }
 
+func validateProfilePayloadLimits(payload *profilePayload) error {
+	if payload == nil {
+		return fmt.Errorf("profile payload is required")
+	}
+	if utf8.RuneCountInString(strings.TrimSpace(payload.Nickname)) > maxProfileNicknameRunes {
+		return fmt.Errorf("nickname exceeds %d chars", maxProfileNicknameRunes)
+	}
+	if utf8.RuneCountInString(strings.TrimSpace(payload.ProfileText)) > maxProfileTextRunes {
+		return fmt.Errorf("profile_text exceeds %d chars", maxProfileTextRunes)
+	}
+	return nil
+}
+
 func (s *Server) normalizeGroupAndChannel(group string, channel string, channelOptional bool) (string, string, error) {
 	groupName, err := validateBoundedName("group", group, s.maxGroupNameRunes)
 	if err != nil {
@@ -1400,6 +1420,207 @@ func (s *Server) addFriendEdgeLocked(a, b string) {
 	s.friends[a][b] = struct{}{}
 }
 
+func (s *Server) persistFriendship(a, b string) {
+	if s.persistenceMode != persistenceModePersist || s.store == nil {
+		return
+	}
+	if err := s.store.rememberFriendEdge(a, b); err != nil {
+		log.Printf("persist friend edge failed: %s -> %s: %v", a, b, err)
+	}
+	if err := s.store.rememberFriendEdge(b, a); err != nil {
+		log.Printf("persist friend edge failed: %s -> %s: %v", b, a, err)
+	}
+}
+
+func (s *Server) loadPersistedFriendEdges() {
+	if s.persistenceMode != persistenceModePersist || s.store == nil {
+		return
+	}
+	edges, err := s.store.loadFriendEdges()
+	if err != nil {
+		log.Printf("load persisted friend edges failed: %v", err)
+		return
+	}
+	if len(edges) == 0 {
+		return
+	}
+	s.mu.Lock()
+	for _, edge := range edges {
+		s.addFriendEdgeLocked(edge[0], edge[1])
+	}
+	s.mu.Unlock()
+	log.Printf("loaded persisted friend edges: %d", len(edges))
+}
+
+func (s *Server) persistChannelState(group, channel, owner string, public bool) {
+	if s.persistenceMode != persistenceModePersist || s.store == nil {
+		return
+	}
+	if err := s.store.rememberChannelState(group, channel, owner, public); err != nil {
+		log.Printf("persist channel state failed: %s/%s owner=%s: %v", group, channel, owner, err)
+	}
+}
+
+func (s *Server) persistUserChannelMembership(loginID, group, channel string) {
+	if s.persistenceMode != persistenceModePersist || s.store == nil {
+		return
+	}
+	if err := s.store.rememberUserChannelMembership(loginID, group, channel); err != nil {
+		log.Printf("persist user channel membership failed: user=%s %s/%s: %v", loginID, group, channel, err)
+	}
+}
+
+func (s *Server) removeUserChannelMembership(loginID, group, channel string) {
+	if s.persistenceMode != persistenceModePersist || s.store == nil {
+		return
+	}
+	if err := s.store.removeUserChannelMembership(loginID, group, channel); err != nil {
+		log.Printf("remove user channel membership failed: user=%s %s/%s: %v", loginID, group, channel, err)
+	}
+}
+
+func (s *Server) loadPersistedChannelsAndMemberships() {
+	if s.persistenceMode != persistenceModePersist || s.store == nil {
+		return
+	}
+	channels, err := s.store.loadAllChannelStates()
+	if err != nil {
+		log.Printf("load persisted channel states failed: %v", err)
+		return
+	}
+	memberships, err := s.store.loadAllUserChannelMemberships()
+	if err != nil {
+		log.Printf("load persisted user memberships failed: %v", err)
+		return
+	}
+
+	s.mu.Lock()
+	for _, st := range channels {
+		key := channelKey(st.Group, st.Channel)
+		ch := s.channels[key]
+		if ch == nil {
+			ch = &ChannelState{
+				Owner:   st.Owner,
+				Public:  st.Public,
+				Members: make(map[string]struct{}),
+				Invites: make(map[string]string),
+			}
+			s.channels[key] = ch
+			continue
+		}
+		if strings.TrimSpace(ch.Owner) == "" {
+			ch.Owner = st.Owner
+		}
+		ch.Public = ch.Public || st.Public
+	}
+	for _, m := range memberships {
+		key := channelKey(m.Group, m.Channel)
+		ch := s.channels[key]
+		if ch == nil {
+			ch = &ChannelState{
+				Owner:   "",
+				Public:  true,
+				Members: make(map[string]struct{}),
+				Invites: make(map[string]string),
+			}
+			s.channels[key] = ch
+		}
+		ch.Members[m.LoginID] = struct{}{}
+	}
+	s.mu.Unlock()
+	log.Printf("loaded persisted channels=%d memberships=%d", len(channels), len(memberships))
+}
+
+func (s *Server) replayPersistedMemberships(loginID string) {
+	if s.persistenceMode != persistenceModePersist || s.store == nil {
+		return
+	}
+	rows, err := s.store.loadUserMembershipsWithChannelState(loginID, defaultMaxPersistedChannelsPerUser)
+	if err != nil {
+		log.Printf("load user memberships failed for %s: %v", loginID, err)
+		return
+	}
+	if len(rows) == 0 {
+		return
+	}
+	for _, st := range rows {
+		if strings.TrimSpace(st.Owner) == loginID {
+			s.notifyUserOrQueue(Packet{
+				Type:    "channel_update",
+				From:    loginID,
+				To:      loginID,
+				Group:   st.Group,
+				Channel: st.Channel,
+				Public:  st.Public,
+				Body:    "created",
+			})
+		}
+		s.notifyUserOrQueue(Packet{
+			Type:    "channel_joined",
+			From:    loginID,
+			To:      loginID,
+			Group:   st.Group,
+			Channel: st.Channel,
+			Public:  st.Public,
+			Body:    "restored",
+		})
+	}
+}
+
+func (s *Server) persistProfileCache(loginID string, payload profilePayload) {
+	if s.persistenceMode != persistenceModePersist || s.store == nil {
+		return
+	}
+	if err := s.store.rememberProfileCache(loginID, payload); err != nil {
+		log.Printf("persist profile cache failed for %s: %v", loginID, err)
+	}
+}
+
+func (s *Server) loadPersistedProfiles() {
+	if s.persistenceMode != persistenceModePersist || s.store == nil {
+		return
+	}
+	entries, err := s.store.loadProfileCache(defaultProfileCacheTTL)
+	if err != nil {
+		log.Printf("load persisted profile cache failed: %v", err)
+		return
+	}
+	if len(entries) == 0 {
+		return
+	}
+	s.mu.Lock()
+	for _, e := range entries {
+		s.profiles[e.LoginID] = e.Payload
+		s.profileUpdated[e.LoginID] = e.UpdatedAt
+	}
+	s.mu.Unlock()
+	log.Printf("loaded persisted profiles: %d", len(entries))
+}
+
+func (s *Server) getFreshProfile(loginID string) (profilePayload, bool) {
+	loginID = strings.TrimSpace(loginID)
+	if loginID == "" {
+		return profilePayload{}, false
+	}
+	cutoff := time.Now().Add(-defaultProfileCacheTTL).Unix()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	updatedAt, ok := s.profileUpdated[loginID]
+	if !ok {
+		return profilePayload{}, false
+	}
+	if updatedAt < cutoff {
+		delete(s.profileUpdated, loginID)
+		delete(s.profiles, loginID)
+		return profilePayload{}, false
+	}
+	p, ok := s.profiles[loginID]
+	if !ok {
+		return profilePayload{}, false
+	}
+	return p, true
+}
+
 func (s *Server) notifyUserOrQueue(p Packet) {
 	if strings.TrimSpace(p.To) == "" {
 		return
@@ -1439,6 +1660,7 @@ func (s *Server) handleFriendAdd(p Packet) {
 	s.mu.Unlock()
 
 	if reverseExists {
+		s.persistFriendship(p.From, p.To)
 		s.notifyUserOrQueue(Packet{Type: "friend_update", From: p.From, To: p.To, Body: p.Body})
 		s.notifyUserOrQueue(Packet{Type: "friend_update", From: p.To, To: p.From, Body: "friends"})
 		return
@@ -1462,6 +1684,7 @@ func (s *Server) handleFriendAccept(p Packet) {
 		s.handleFriendAdd(Packet{From: p.From, To: p.To, Body: p.Body})
 		return
 	}
+	s.persistFriendship(p.From, p.To)
 	s.notifyUserOrQueue(Packet{Type: "friend_update", From: p.From, To: p.To, Body: p.Body})
 	s.notifyUserOrQueue(Packet{Type: "friend_update", From: p.To, To: p.From, Body: "friends"})
 }
@@ -1508,6 +1731,8 @@ func (s *Server) handleChannelCreate(p Packet) {
 	}
 	publicChannel := ch.Public
 	s.mu.Unlock()
+	s.persistChannelState(group, channel, p.From, publicChannel)
+	s.persistUserChannelMembership(p.From, group, channel)
 	s.notifyUserOrQueue(Packet{Type: "channel_update", From: p.From, To: p.From, Group: group, Channel: channel, Public: publicChannel, Body: "created"})
 }
 
@@ -1646,6 +1871,7 @@ func (s *Server) handleChannelJoin(p Packet) {
 			return joined[i].Channel < joined[j].Channel
 		})
 		for _, evt := range joined {
+			s.persistUserChannelMembership(p.From, evt.Group, evt.Channel)
 			s.notifyUserOrQueue(evt)
 		}
 		return
@@ -1694,6 +1920,7 @@ func (s *Server) handleChannelJoin(p Packet) {
 			return joinedChannels[i].Channel < joinedChannels[j].Channel
 		})
 		for _, evt := range joinedChannels {
+			s.persistUserChannelMembership(p.From, evt.Group, evt.Channel)
 			s.notifyUserOrQueue(evt)
 		}
 		return
@@ -1715,6 +1942,7 @@ func (s *Server) handleChannelLeave(p Packet) {
 		delete(ch.Members, p.From)
 	}
 	s.mu.Unlock()
+	s.removeUserChannelMembership(p.From, group, channel)
 }
 
 func (s *Server) handleChannelSend(p Packet) {
@@ -1755,6 +1983,10 @@ func (s *Server) handleProfileSet(p Packet) {
 	payload.Nickname = strings.TrimSpace(payload.Nickname)
 	payload.ProfileText = strings.TrimSpace(payload.ProfileText)
 	payload.ProfileImage = strings.TrimSpace(payload.ProfileImage)
+	if err := validateProfilePayloadLimits(&payload); err != nil {
+		s.sendProtocolError(p.From, "profile_set failed: "+err.Error())
+		return
+	}
 	if err := validateProfileImageDataURL(payload.ProfileImage, maxProfileImageBytes); err != nil {
 		s.sendProtocolError(p.From, "profile_set failed: "+err.Error())
 		return
@@ -1762,13 +1994,45 @@ func (s *Server) handleProfileSet(p Packet) {
 
 	s.mu.Lock()
 	s.profiles[p.From] = payload
+	s.profileUpdated[p.From] = time.Now().Unix()
 	s.mu.Unlock()
+	s.persistProfileCache(p.From, payload)
 
-	out := Packet{Type: "profile_data", ID: p.ID, From: p.From, To: p.To, Body: p.Body, Compression: p.Compression, USize: p.USize, Origin: s.id, PubKey: p.PubKey, Sig: p.Sig}
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	body, comp, usize, err := encodeBodyForRelay(string(bodyBytes))
+	if err != nil {
+		return
+	}
+	out := Packet{
+		Type:        "profile_data",
+		ID:          p.ID,
+		From:        p.From,
+		To:          p.To,
+		Body:        body,
+		Compression: comp,
+		USize:       usize,
+		Origin:      s.id,
+		PubKey:      p.PubKey,
+		Sig:         p.Sig,
+	}
 	if strings.TrimSpace(p.To) != "" {
 		s.notifyUserOrQueue(out)
 	} else {
-		s.notifyUserOrQueue(Packet{Type: "profile_data", ID: p.ID, From: p.From, To: p.From, Body: p.Body, Compression: p.Compression, USize: p.USize, Origin: s.id, PubKey: p.PubKey, Sig: p.Sig})
+		s.notifyUserOrQueue(Packet{
+			Type:        "profile_data",
+			ID:          p.ID,
+			From:        p.From,
+			To:          p.From,
+			Body:        body,
+			Compression: comp,
+			USize:       usize,
+			Origin:      s.id,
+			PubKey:      p.PubKey,
+			Sig:         p.Sig,
+		})
 	}
 }
 
@@ -1776,9 +2040,7 @@ func (s *Server) handleProfileGet(p Packet) {
 	if strings.TrimSpace(p.To) == "" {
 		return
 	}
-	s.mu.RLock()
-	payload, ok := s.profiles[p.To]
-	s.mu.RUnlock()
+	payload, ok := s.getFreshProfile(p.To)
 	if !ok {
 		return
 	}
@@ -2125,6 +2387,7 @@ func (s *Server) handleUser(loginID string, c *Conn, reader *bufio.Reader, rl *r
 	_ = c.Send(Packet{Type: "ok", ID: loginID, Body: "authenticated"})
 	log.Printf("user connected: %s", loginID)
 	s.deliverPending(loginID)
+	s.replayPersistedMemberships(loginID)
 
 	for {
 		var p Packet

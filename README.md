@@ -66,29 +66,35 @@ Open Accord is a decentralized chat prototype with these components:
 
 ## Running
 
-### Start a local node mesh
+### Boot local servers + clients
 
 ```bash
-./scripts/start-peers.sh
+./scripts/boot.sh
 ```
 
-This launches multiple local nodes and creates per-node runtime state under:
+This is the main quick-iteration command:
+- Starts local nodes and web clients.
+- Stays attached to your terminal.
+- Shuts down all launched processes when you exit (for example `Ctrl+C` or terminal close).
+
+Web client ports are stable (`127.0.0.1:8080`, `127.0.0.1:8081`, ...), so you can keep tabs open and refresh quickly.
+
+Runtime state is written under:
 - `.run/nodes/instances/<sid>/config/node.toml`
 - `.run/nodes/instances/<sid>/data/state.sqlite`
 - `.run/nodes/instances/<sid>/logs/node.log`
-
-Related scripts:
-- `./scripts/status-peers.sh`
-- `./scripts/stop-peers.sh`
-- `./scripts/reboot-peers.sh`
+- `.run/clients/logs/<sid>.log`
 
 ### Run clients
 
 ```bash
-go run ./client-web -addr 127.0.0.1:9101
+go run ./client-web -addr 127.0.0.1:9101 -web 127.0.0.1:8080 -open=false
 go run ./client-tui -addr 127.0.0.1:9101
 go run ./client-fyne
 ```
+
+`client-web` defaults now use a fixed web port (`127.0.0.1:8080`) and no
+browser auto-open unless `-open=true` is passed.
 
 ## Notes
 

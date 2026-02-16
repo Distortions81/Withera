@@ -124,7 +124,14 @@ func startTestServer(t *testing.T, localSID, advertise string, seedAddrs []strin
 		s.clientAllow[id] = struct{}{}
 	}
 	if s.persistenceMode == persistenceModePersist {
-		store, err := openSQLiteStore(cfg.persistenceDB, s.id, ownerLoginID, s.maxPendingMsgs)
+		store, err := openSQLiteStore(
+			cfg.persistenceDB,
+			s.id,
+			ownerLoginID,
+			s.maxPendingMsgs,
+			defaultMaxPersistedFriends,
+			defaultMaxPersistedChannelsPerUser,
+		)
 		if err != nil {
 			t.Fatalf("openSQLiteStore failed: %v", err)
 		}

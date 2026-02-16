@@ -611,6 +611,38 @@ let groupIconDirty = false;
 let groupCreateIconDraft = '';
 let chatShowProfileImages = true;
 let chatShowTime = true;
+const avatarMaxTTLMS = 6 * 60 * 60 * 1000;
+let actorAvatars = {};
+
+function rememberActorAvatar(loginID, profileImage, checksum) {
+  loginID = (loginID || '').trim();
+  if (!loginID) return;
+  const img = (profileImage || '').trim();
+  const sum = (checksum || '').trim();
+  if (!img) {
+    delete actorAvatars[loginID];
+    return;
+  }
+  const cur = actorAvatars[loginID];
+  if (cur && cur.checksum && sum && cur.checksum === sum) {
+    cur.seenAt = Date.now();
+    return;
+  }
+  actorAvatars[loginID] = { image: img, checksum: sum, seenAt: Date.now() };
+}
+
+function pruneActorAvatars() {
+  const now = Date.now();
+  for (const [id, entry] of Object.entries(actorAvatars)) {
+    if (!entry || !entry.image) {
+      delete actorAvatars[id];
+      continue;
+    }
+    if ((now - Number(entry.seenAt || 0)) > avatarMaxTTLMS) {
+      delete actorAvatars[id];
+    }
+  }
+}
 
 function setInfoCollapsed(collapsed) {
   document.querySelector('.right-col').classList.toggle('info-collapsed', !!collapsed);
@@ -1143,9 +1175,15 @@ function actorProfileImage(loginID) {
   loginID = (loginID || '').trim();
   if (!loginID) return '';
   if (loginID === selfLoginID) return (selfProfileImage || '').trim();
+  pruneActorAvatars();
+  const cached = actorAvatars[loginID];
+  if (cached && cached.image) return cached.image;
   const t = (latestTargets || []).find((x) => (x.id || '') === loginID);
   if (!t) return '';
-  return (t.profile_image || '').trim();
+  const img = (t.profile_image || '').trim();
+  const sum = (t.image_checksum || '').trim();
+  if (img) rememberActorAvatar(loginID, img, sum);
+  return img;
 }
 
 function createChatAvatar(loginID) {
@@ -1243,6 +1281,9 @@ function renderChat() {
 function appendChat(ev) {
   chatEvents.push(ev);
   if (chatEvents.length > 1000) chatEvents = chatEvents.slice(chatEvents.length - 1000);
+  if (ev && ev.actor_id) {
+    rememberActorAvatar(ev.actor_id, ev.actor_profile_image || '', ev.actor_profile_checksum || '');
+  }
   const isDM = (ev.mode || '').trim() === 'dm';
   const isGroup = (ev.mode || '').trim() === 'group';
   const target = (ev.target || '').trim();
@@ -1440,6 +1481,9 @@ async function openProfileCard(loginID, anchorEl) {
 function renderTargets(targets, pendingFriends) {
   latestTargets = Array.isArray(targets) ? targets : [];
   latestPendingFriends = Array.isArray(pendingFriends) ? pendingFriends : [];
+  for (const t of latestTargets) {
+    rememberActorAvatar((t.id || '').trim(), (t.profile_image || '').trim(), (t.image_checksum || '').trim());
+  }
   let changed = false;
   if (!isGroupMode() && activeTarget) {
     const found = latestTargets.some((t) => (t.id || '') === activeTarget);
@@ -1575,22 +1619,43 @@ async function createGroupFromPanel() {
     return;
   }
   try {
-    await post('/api/group/create', {group, channel: 'default', public: true});
-    if (groupCreateIconDraft) {
-      await post('/api/group/icon/set', {group, icon: groupCreateIconDraft});
-    }
+    const iconDraft = groupCreateIconDraft;
+    const created = await post('/api/group/create', {group, channel: 'default', public: true});
+    const createdGroup = ((created && created.group) || group).trim();
+    const createdChannel = (((created && created.channel) || 'default').trim() || 'default');
+
     groupCreateEditor.hidden = true;
     groupCreateName.value = '';
     groupCreateIconDraft = '';
     groupCreateIconInput.value = '';
     setAvatarImage(groupCreateIconPreview, groupCreateIconPreviewIcon, '');
+
     navMode = 'group';
-    activeGroup = group;
-    activeChannel = 'default';
+    activeGroup = createdGroup;
+    activeChannel = createdChannel;
     activeTarget = '';
+    let foundGroup = false;
+    for (const g of latestGroups) {
+      if ((g.name || '') !== createdGroup) continue;
+      foundGroup = true;
+      if (!Array.isArray(g.channels)) g.channels = [];
+      if (!g.channels.includes(createdChannel)) g.channels.push(createdChannel);
+      break;
+    }
+    if (!foundGroup) {
+      latestGroups.push({name: createdGroup, channels: [createdChannel], owned: true});
+    }
+    renderGroups(latestGroups);
     updateChatContext();
-    await poll();
     persistContextSoon();
+    try {
+      if (iconDraft) {
+        await post('/api/group/icon/set', {group: createdGroup, icon: iconDraft});
+      }
+    } catch (e) {
+      appendInfo(`group-icon failed: ${e.message}`);
+    }
+    await poll();
   } catch (e) {
     appendInfo(`group-create failed: ${e.message}`);
   }
@@ -1857,6 +1922,7 @@ function resetUIForSetup() {
   latestPendingFriends = [];
   latestPendingInvites = [];
   latestGroups = [];
+  actorAvatars = {};
   navMode = 'dm';
   activeTarget = '';
   activeGroup = '';
@@ -1897,6 +1963,9 @@ async function poll() {
     if (data.pending_invites) updatePendingInvites(data.pending_invites || []);
     for (const ev of (data.events || [])) {
       since = Math.max(since, ev.seq || 0);
+      if (ev.actor_id) {
+        rememberActorAvatar(ev.actor_id, ev.actor_profile_image || '', ev.actor_profile_checksum || '');
+      }
       if (ev.kind === 'chat') appendChat(ev);
       else appendInfo(`${ev.ts} ${ev.text}`);
     }

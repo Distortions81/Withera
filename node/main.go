@@ -202,11 +202,21 @@ func main() {
 			}
 			dbPath = filepath.Join(home, ".goaccord", "state", strings.ReplaceAll(s.id, ":", "_")+".sqlite")
 		}
-		store, err := openSQLiteStore(dbPath, s.id, ownerLoginID, s.maxPendingMsgs)
+		store, err := openSQLiteStore(
+			dbPath,
+			s.id,
+			ownerLoginID,
+			s.maxPendingMsgs,
+			defaultMaxPersistedFriends,
+			defaultMaxPersistedChannelsPerUser,
+		)
 		if err != nil {
 			log.Fatalf("sqlite init failed: %v", err)
 		}
 		s.store = store
+		s.loadPersistedFriendEdges()
+		s.loadPersistedChannelsAndMemberships()
+		s.loadPersistedProfiles()
 		defer func() {
 			if err := store.Close(); err != nil {
 				log.Printf("sqlite close error: %v", err)

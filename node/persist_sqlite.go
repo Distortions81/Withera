@@ -27,9 +27,11 @@ type storedMessage struct {
 type sqliteStore struct {
 	db             *sql.DB
 	maxPendingUser int
+	maxFriendsUser int
+	maxChannelsUser int
 }
 
-func openSQLiteStore(path string, serverID string, ownerID string, maxPendingUser int) (*sqliteStore, error) {
+func openSQLiteStore(path string, serverID string, ownerID string, maxPendingUser int, maxFriendsUser int, maxChannelsUser int) (*sqliteStore, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, fmt.Errorf("sqlite path is required")
 	}
@@ -41,9 +43,20 @@ func openSQLiteStore(path string, serverID string, ownerID string, maxPendingUse
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	store := &sqliteStore{db: db, maxPendingUser: maxPendingUser}
+	store := &sqliteStore{
+		db:              db,
+		maxPendingUser:  maxPendingUser,
+		maxFriendsUser:  maxFriendsUser,
+		maxChannelsUser: maxChannelsUser,
+	}
 	if store.maxPendingUser <= 0 {
 		store.maxPendingUser = 500
+	}
+	if store.maxFriendsUser <= 0 {
+		store.maxFriendsUser = 256
+	}
+	if store.maxChannelsUser <= 0 {
+		store.maxChannelsUser = 512
 	}
 	if err := store.initSchema(serverID, ownerID); err != nil {
 		_ = db.Close()
@@ -119,6 +132,38 @@ func (s *sqliteStore) initSchema(serverID string, ownerID string) error {
 			owner_login_id TEXT NOT NULL,
 			seen_at INTEGER NOT NULL
 		);`,
+		`CREATE TABLE IF NOT EXISTS friend_edges (
+			login_id TEXT NOT NULL,
+			friend_login_id TEXT NOT NULL,
+			updated_at INTEGER NOT NULL,
+			PRIMARY KEY(login_id, friend_login_id)
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_friend_edges_login_updated ON friend_edges(login_id, updated_at);`,
+		`CREATE TABLE IF NOT EXISTS channels_state (
+			group_name TEXT NOT NULL,
+			channel_name TEXT NOT NULL,
+			owner_login_id TEXT NOT NULL,
+			is_public INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL,
+			PRIMARY KEY(group_name, channel_name)
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_channels_state_group ON channels_state(group_name);`,
+		`CREATE TABLE IF NOT EXISTS user_channel_memberships (
+			login_id TEXT NOT NULL,
+			group_name TEXT NOT NULL,
+			channel_name TEXT NOT NULL,
+			updated_at INTEGER NOT NULL,
+			PRIMARY KEY(login_id, group_name, channel_name)
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_user_memberships_login_updated ON user_channel_memberships(login_id, updated_at);`,
+		`CREATE TABLE IF NOT EXISTS profile_cache (
+			login_id TEXT PRIMARY KEY,
+			nickname TEXT NOT NULL,
+			profile_text TEXT NOT NULL,
+			profile_image TEXT NOT NULL,
+			updated_at INTEGER NOT NULL
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_profile_cache_updated ON profile_cache(updated_at);`,
 	}
 	for _, stmt := range schema {
 		if _, err := s.db.Exec(stmt); err != nil {
@@ -231,6 +276,361 @@ func (s *sqliteStore) rememberChannel(group string, channel string, creator stri
 			updated_at = excluded.updated_at
 	`, group, channel, creator, now, now)
 	return err
+}
+
+func (s *sqliteStore) rememberChannelState(group string, channel string, owner string, public bool) error {
+	group = strings.TrimSpace(group)
+	channel = strings.TrimSpace(channel)
+	owner = strings.TrimSpace(owner)
+	if group == "" || channel == "" || owner == "" {
+		return nil
+	}
+	now := time.Now().Unix()
+	pub := 0
+	if public {
+		pub = 1
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO channels_state(group_name, channel_name, owner_login_id, is_public, updated_at)
+		VALUES(?, ?, ?, ?, ?)
+		ON CONFLICT(group_name, channel_name) DO UPDATE SET
+			owner_login_id = excluded.owner_login_id,
+			is_public = excluded.is_public,
+			updated_at = excluded.updated_at
+	`, group, channel, owner, pub, now)
+	return err
+}
+
+func (s *sqliteStore) rememberUserChannelMembership(loginID string, group string, channel string) error {
+	loginID = strings.TrimSpace(loginID)
+	group = strings.TrimSpace(group)
+	channel = strings.TrimSpace(channel)
+	if loginID == "" || group == "" || channel == "" {
+		return nil
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	now := time.Now().Unix()
+	_, err = tx.Exec(`
+		INSERT INTO user_channel_memberships(login_id, group_name, channel_name, updated_at)
+		VALUES(?, ?, ?, ?)
+		ON CONFLICT(login_id, group_name, channel_name) DO UPDATE SET
+			updated_at = excluded.updated_at
+	`, loginID, group, channel, now)
+	if err != nil {
+		return err
+	}
+
+	var count int
+	if err := tx.QueryRow(`SELECT COUNT(1) FROM user_channel_memberships WHERE login_id = ?`, loginID).Scan(&count); err != nil {
+		return err
+	}
+	over := count - s.maxChannelsUser
+	if over > 0 {
+		_, err = tx.Exec(`
+			DELETE FROM user_channel_memberships
+			WHERE rowid IN (
+				SELECT rowid FROM user_channel_memberships
+				WHERE login_id = ?
+				ORDER BY updated_at ASC, group_name ASC, channel_name ASC
+				LIMIT ?
+			)
+		`, loginID, over)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+func (s *sqliteStore) removeUserChannelMembership(loginID string, group string, channel string) error {
+	loginID = strings.TrimSpace(loginID)
+	group = strings.TrimSpace(group)
+	channel = strings.TrimSpace(channel)
+	if loginID == "" || group == "" || channel == "" {
+		return nil
+	}
+	_, err := s.db.Exec(`
+		DELETE FROM user_channel_memberships
+		WHERE login_id = ? AND group_name = ? AND channel_name = ?
+	`, loginID, group, channel)
+	return err
+}
+
+type persistedChannelState struct {
+	Group   string
+	Channel string
+	Owner   string
+	Public  bool
+}
+
+type persistedUserMembership struct {
+	LoginID string
+	Group   string
+	Channel string
+}
+
+func (s *sqliteStore) loadAllChannelStates() ([]persistedChannelState, error) {
+	rows, err := s.db.Query(`
+		SELECT group_name, channel_name, owner_login_id, is_public
+		FROM channels_state
+		ORDER BY group_name ASC, channel_name ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]persistedChannelState, 0)
+	for rows.Next() {
+		var st persistedChannelState
+		var isPublic int
+		if err := rows.Scan(&st.Group, &st.Channel, &st.Owner, &isPublic); err != nil {
+			return nil, err
+		}
+		st.Group = strings.TrimSpace(st.Group)
+		st.Channel = strings.TrimSpace(st.Channel)
+		st.Owner = strings.TrimSpace(st.Owner)
+		st.Public = isPublic != 0
+		if st.Group == "" || st.Channel == "" {
+			continue
+		}
+		out = append(out, st)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (s *sqliteStore) loadAllUserChannelMemberships() ([]persistedUserMembership, error) {
+	rows, err := s.db.Query(`
+		SELECT login_id, group_name, channel_name
+		FROM user_channel_memberships
+		ORDER BY login_id ASC, group_name ASC, channel_name ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]persistedUserMembership, 0)
+	for rows.Next() {
+		var m persistedUserMembership
+		if err := rows.Scan(&m.LoginID, &m.Group, &m.Channel); err != nil {
+			return nil, err
+		}
+		m.LoginID = strings.TrimSpace(m.LoginID)
+		m.Group = strings.TrimSpace(m.Group)
+		m.Channel = strings.TrimSpace(m.Channel)
+		if m.LoginID == "" || m.Group == "" || m.Channel == "" {
+			continue
+		}
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (s *sqliteStore) loadUserMembershipsWithChannelState(loginID string, limit int) ([]persistedChannelState, error) {
+	loginID = strings.TrimSpace(loginID)
+	if loginID == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = s.maxChannelsUser
+		if limit <= 0 {
+			limit = 512
+		}
+	}
+
+	rows, err := s.db.Query(`
+		SELECT m.group_name, m.channel_name,
+		       COALESCE(cs.owner_login_id, ''), COALESCE(cs.is_public, 1)
+		FROM user_channel_memberships m
+		LEFT JOIN channels_state cs
+		  ON cs.group_name = m.group_name AND cs.channel_name = m.channel_name
+		WHERE m.login_id = ?
+		ORDER BY m.updated_at DESC, m.group_name ASC, m.channel_name ASC
+		LIMIT ?
+	`, loginID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]persistedChannelState, 0)
+	for rows.Next() {
+		var st persistedChannelState
+		var isPublic int
+		if err := rows.Scan(&st.Group, &st.Channel, &st.Owner, &isPublic); err != nil {
+			return nil, err
+		}
+		st.Group = strings.TrimSpace(st.Group)
+		st.Channel = strings.TrimSpace(st.Channel)
+		st.Owner = strings.TrimSpace(st.Owner)
+		st.Public = isPublic != 0
+		if st.Group == "" || st.Channel == "" {
+			continue
+		}
+		out = append(out, st)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+type persistedProfileCacheEntry struct {
+	LoginID   string
+	Payload   profilePayload
+	UpdatedAt int64
+}
+
+func (s *sqliteStore) rememberProfileCache(loginID string, payload profilePayload) error {
+	loginID = strings.TrimSpace(loginID)
+	if loginID == "" {
+		return nil
+	}
+	now := time.Now().Unix()
+	_, err := s.db.Exec(`
+		INSERT INTO profile_cache(login_id, nickname, profile_text, profile_image, updated_at)
+		VALUES(?, ?, ?, ?, ?)
+		ON CONFLICT(login_id) DO UPDATE SET
+			nickname = excluded.nickname,
+			profile_text = excluded.profile_text,
+			profile_image = excluded.profile_image,
+			updated_at = excluded.updated_at
+	`, loginID, payload.Nickname, payload.ProfileText, payload.ProfileImage, now)
+	return err
+}
+
+func (s *sqliteStore) loadProfileCache(maxAge time.Duration) ([]persistedProfileCacheEntry, error) {
+	cutoff := int64(0)
+	if maxAge > 0 {
+		cutoff = time.Now().Add(-maxAge).Unix()
+	}
+	if cutoff > 0 {
+		if _, err := s.db.Exec(`DELETE FROM profile_cache WHERE updated_at < ?`, cutoff); err != nil {
+			return nil, err
+		}
+	}
+
+	rows, err := s.db.Query(`
+		SELECT login_id, nickname, profile_text, profile_image, updated_at
+		FROM profile_cache
+		ORDER BY updated_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]persistedProfileCacheEntry, 0)
+	for rows.Next() {
+		var e persistedProfileCacheEntry
+		if err := rows.Scan(&e.LoginID, &e.Payload.Nickname, &e.Payload.ProfileText, &e.Payload.ProfileImage, &e.UpdatedAt); err != nil {
+			return nil, err
+		}
+		e.LoginID = strings.TrimSpace(e.LoginID)
+		e.Payload.Nickname = strings.TrimSpace(e.Payload.Nickname)
+		e.Payload.ProfileText = strings.TrimSpace(e.Payload.ProfileText)
+		e.Payload.ProfileImage = strings.TrimSpace(e.Payload.ProfileImage)
+		if e.LoginID == "" {
+			continue
+		}
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (s *sqliteStore) rememberFriendEdge(loginID string, friendID string) error {
+	loginID = strings.TrimSpace(loginID)
+	friendID = strings.TrimSpace(friendID)
+	if loginID == "" || friendID == "" || loginID == friendID {
+		return nil
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	now := time.Now().Unix()
+	_, err = tx.Exec(`
+		INSERT INTO friend_edges(login_id, friend_login_id, updated_at)
+		VALUES(?, ?, ?)
+		ON CONFLICT(login_id, friend_login_id) DO UPDATE SET
+			updated_at = excluded.updated_at
+	`, loginID, friendID, now)
+	if err != nil {
+		return err
+	}
+
+	var count int
+	if err := tx.QueryRow(`SELECT COUNT(1) FROM friend_edges WHERE login_id = ?`, loginID).Scan(&count); err != nil {
+		return err
+	}
+	over := count - s.maxFriendsUser
+	if over > 0 {
+		_, err = tx.Exec(`
+			DELETE FROM friend_edges
+			WHERE rowid IN (
+				SELECT rowid FROM friend_edges
+				WHERE login_id = ?
+				ORDER BY updated_at ASC, friend_login_id ASC
+				LIMIT ?
+			)
+		`, loginID, over)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+func (s *sqliteStore) loadFriendEdges() ([][2]string, error) {
+	rows, err := s.db.Query(`
+		SELECT login_id, friend_login_id
+		FROM friend_edges
+		ORDER BY login_id ASC, friend_login_id ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([][2]string, 0)
+	for rows.Next() {
+		var loginID string
+		var friendID string
+		if err := rows.Scan(&loginID, &friendID); err != nil {
+			return nil, err
+		}
+		loginID = strings.TrimSpace(loginID)
+		friendID = strings.TrimSpace(friendID)
+		if loginID == "" || friendID == "" || loginID == friendID {
+			continue
+		}
+		out = append(out, [2]string{loginID, friendID})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (s *sqliteStore) queueMessageForUser(toID string, msg storedMessage) error {
