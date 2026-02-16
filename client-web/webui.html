@@ -9,12 +9,17 @@
     :root { --bg:#0d1217; --panel:#151d25; --text:#e6edf3; --muted:#8e9aa7; --accent:#55b2ff; --line:#263341; }
     html, body { width:100%; height:100%; overflow:hidden; }
     body { margin:0; font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:15px; background:var(--bg); color:var(--text); }
-    .wrap { width:100%; height:100dvh; margin:0; padding:10px; box-sizing:border-box; display:grid; grid-template-columns: minmax(320px, 380px) 1fr; gap:10px; overflow:hidden; }
+    .wrap {
+      position:fixed; inset:0;
+      margin:0; padding:10px; box-sizing:border-box;
+      display:grid; grid-template-columns: minmax(320px, 380px) 1fr; gap:10px;
+      overflow:hidden;
+    }
     .mode-dm #friendList { border-color:#78c8ff; box-shadow:0 0 0 1px rgba(120,200,255,.22) inset; }
     .mode-group #channelList { border-color:#65d59c; box-shadow:0 0 0 1px rgba(101,213,156,.2) inset; }
-    .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px; display:flex; flex-direction:column; min-height:0; }
+    .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px; display:flex; flex-direction:column; min-height:0; min-width:0; }
     .left-panel { position:relative; padding-bottom:78px; }
-    .left-nav-layout { display:grid; grid-template-columns:60px 1fr; gap:10px; min-height:0; flex:1; }
+    .left-nav-layout { display:grid; grid-template-columns:60px 1fr; gap:10px; min-height:0; min-width:0; flex:1; }
     .nav-rail { display:flex; flex-direction:column; gap:8px; min-height:0; }
     .nav-rail-top { display:flex; flex-direction:column; gap:8px; min-height:0; overflow:hidden; }
     .nav-rail-bottom { margin-top:auto; }
@@ -30,7 +35,7 @@
       width:56px; text-align:center; font-size:10px; color:var(--muted);
       overflow:hidden; white-space:nowrap; text-overflow:ellipsis;
     }
-    .context-pane { display:flex; flex-direction:column; min-height:0; }
+    .context-pane { display:flex; flex-direction:column; min-height:0; min-width:0; }
     .rail-btn {
       width:52px; height:52px; margin:0; padding:0;
       border-radius:12px; border:1px solid #2d3c4b;
@@ -46,7 +51,7 @@
       border-color:#5a738a;
     }
     .mode-group #dmModeBtn { opacity:.7; }
-    .right-col { display:grid; grid-template-rows: minmax(140px, 34%) 1fr; gap:12px; min-height:0; }
+    .right-col { display:grid; grid-template-rows: minmax(140px, 34%) 1fr; gap:12px; min-height:0; min-width:0; }
     .right-col.info-collapsed { grid-template-rows: 48px 1fr; }
     .right-col.info-collapsed #info { display:none; }
     .info-preview {
@@ -59,6 +64,18 @@
     .channel-list { flex:1; min-height:0; overflow:auto; border:1px solid var(--line); border-radius:8px; padding:6px; }
     .group-row { display:flex; align-items:center; gap:8px; justify-content:space-between; padding:6px 4px; border-bottom:1px solid #223040; cursor:pointer; }
     .group-name { min-width:0; overflow-wrap:anywhere; word-break:break-word; font-weight:700; flex:1; }
+    .channel-actions { display:flex; align-items:center; gap:6px; opacity:0; pointer-events:none; transition:opacity .12s ease; }
+    .group-row:hover .channel-actions,
+    .group-row.sel-row-channel .channel-actions { opacity:1; pointer-events:auto; }
+    .channel-gear-btn {
+      width:24px; height:24px; min-width:24px;
+      display:inline-flex; align-items:center; justify-content:center;
+      padding:0; border-radius:999px;
+      border:1px solid #2d3c4b; background:#0f1620; color:#8e9aa7;
+      cursor:pointer; line-height:1;
+    }
+    .channel-gear-btn:hover { color:#d3e39b; border-color:#4a5f38; }
+    .channel-gear-btn svg { width:12px; height:12px; fill:currentColor; }
     .row-icon-btn {
       width:auto; min-width:0; margin:0; padding:2px 7px; border-radius:999px;
       border:1px solid #2d3c4b; background:#0f1620; color:#8e9aa7; cursor:pointer;
@@ -1625,6 +1642,8 @@ function renderTargets(targets, pendingFriends) {
     controls.appendChild(createCopyIDControl(t.user_id || t.id));
     const head = document.createElement('div');
     head.className = 'friend-head';
+    const avatar = createChatAvatar(t.id || '');
+    head.appendChild(avatar);
     head.appendChild(nameWrap);
     head.appendChild(controls);
 
@@ -1931,10 +1950,27 @@ function renderChannels() {
     name.className = 'group-name';
     name.textContent = ch;
     row.appendChild(name);
+    const actions = document.createElement('div');
+    actions.className = 'channel-actions';
     const cUnread = Number(unreadGroupChannel[(activeGroup || '') + '/' + ch] || 0);
     if (cUnread > 0) {
-      row.appendChild(createUnreadBadge(cUnread));
+      actions.appendChild(createUnreadBadge(cUnread));
     }
+    if (canCreate) {
+      const gear = document.createElement('button');
+      gear.type = 'button';
+      gear.className = 'channel-gear-btn';
+      gear.title = `Channel settings: ${ch}`;
+      gear.setAttribute('aria-label', `Channel settings ${ch}`);
+      gear.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.4 13a7.8 7.8 0 0 0 .1-1l2-1.6-2-3.4-2.4 1a7.9 7.9 0 0 0-1.7-1l-.3-2.6h-4l-.3 2.6a7.9 7.9 0 0 0-1.7 1l-2.4-1-2 3.4L4.5 12a7.8 7.8 0 0 0 .1 1l-2 1.6 2 3.4 2.4-1a7.9 7.9 0 0 0 1.7 1l.3 2.6h4l.3-2.6a7.9 7.9 0 0 0 1.7-1l2.4 1 2-3.4-2-1.6zM12 15.2a3.2 3.2 0 1 1 0-6.4 3.2 3.2 0 0 1 0 6.4z"/></svg>';
+      gear.onclick = (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        openChannelSettingsMenu(activeGroup, ch);
+      };
+      actions.appendChild(gear);
+    }
+    row.appendChild(actions);
     channelList.appendChild(row);
   }
   if (canCreate) {
@@ -1964,6 +2000,35 @@ function renderChannels() {
     addRow.appendChild(plus);
     channelList.appendChild(addRow);
   }
+}
+
+function openChannelSettingsMenu(group, channel) {
+  group = (group || '').trim();
+  channel = (channel || '').trim();
+  if (!group || !channel) return;
+  const pick = window.prompt(
+    `Channel settings for ${group}/${channel}\n` +
+    `1) Rename channel\n` +
+    `2) Edit topic\n` +
+    `3) Channel settings\n\n` +
+    `Enter 1, 2, or 3`,
+    '1'
+  );
+  const choice = (pick || '').trim();
+  if (!choice) return;
+  if (choice === '1') {
+    appendInfo(`channel rename UI next: ${group}/${channel}`);
+    return;
+  }
+  if (choice === '2') {
+    appendInfo(`channel topic UI next: ${group}/${channel}`);
+    return;
+  }
+  if (choice === '3') {
+    appendInfo(`channel settings UI next: ${group}/${channel}`);
+    return;
+  }
+  appendInfo('invalid channel settings selection');
 }
 
 async function bootstrap() {
