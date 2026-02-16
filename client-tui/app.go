@@ -2502,20 +2502,28 @@ func loginIDForPubKey(pub ed25519.PublicKey) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func loadKey(path string) (ed25519.PrivateKey, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var kf keyFile
+	if err := json.Unmarshal(data, &kf); err != nil {
+		return nil, err
+	}
+	raw, err := base64.StdEncoding.DecodeString(kf.PrivateKey)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("invalid private key size")
+	}
+	return ed25519.PrivateKey(raw), nil
+}
+
 func loadOrCreateKey(path string) (ed25519.PrivateKey, error) {
-	if data, err := os.ReadFile(path); err == nil {
-		var kf keyFile
-		if err := json.Unmarshal(data, &kf); err != nil {
-			return nil, err
-		}
-		raw, err := base64.StdEncoding.DecodeString(kf.PrivateKey)
-		if err != nil {
-			return nil, err
-		}
-		if len(raw) != ed25519.PrivateKeySize {
-			return nil, fmt.Errorf("invalid private key size")
-		}
-		return ed25519.PrivateKey(raw), nil
+	if _, err := os.ReadFile(path); err == nil {
+		return loadKey(path)
 	}
 
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -2540,11 +2548,11 @@ func saveIdentityKey(path string, priv ed25519.PrivateKey) error {
 }
 
 func e2eePathForKey(home string, keyPath string) string {
-	return filepath.Join(apphome.BaseDirWithHome(home), "e2ee", "e2ee-"+filepath.Base(strings.TrimSpace(keyPath))+".json")
+	return filepath.Join(apphome.BaseDirForKeyPath(home, keyPath), "e2ee", "e2ee-"+filepath.Base(strings.TrimSpace(keyPath))+".json")
 }
 
 func e2eeStatePathForKey(home string, keyPath string) string {
-	return filepath.Join(apphome.BaseDirWithHome(home), "e2ee", "e2ee-state-"+filepath.Base(strings.TrimSpace(keyPath))+".json")
+	return filepath.Join(apphome.BaseDirForKeyPath(home, keyPath), "e2ee", "e2ee-state-"+filepath.Base(strings.TrimSpace(keyPath))+".json")
 }
 
 func loadOrCreateE2EEKey(path string) (*ecdh.PrivateKey, string, error) {
@@ -2761,7 +2769,7 @@ type identityCandidate struct {
 }
 
 func profilePathForKey(home string, keyPath string) string {
-	return filepath.Join(apphome.BaseDirWithHome(home), "profiles", "profile-"+filepath.Base(strings.TrimSpace(keyPath))+".json")
+	return filepath.Join(apphome.BaseDirForKeyPath(home, keyPath), "profiles", "profile-"+filepath.Base(strings.TrimSpace(keyPath))+".json")
 }
 
 func writeFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
@@ -2800,6 +2808,18 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
 		_ = d.Close()
 	}
 	return nil
+}
+
+func fileExists(path string) bool {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return !info.IsDir()
 }
 
 func copyIdentityFile(srcPath string, dstPath string) (string, error) {
@@ -2957,7 +2977,7 @@ func restoreIdentityFromRecovery(home string, reader *bufio.Reader) (string, err
 		return "", fmt.Errorf("invalid recovery seed length: got %d bytes, expected %d", len(seed), ed25519.SeedSize)
 	}
 	priv := ed25519.NewKeyFromSeed(seed)
-	idsDir := filepath.Join(apphome.BaseDirWithHome(home), "identities")
+	idsDir := filepath.Join(apphome.CurrentDirWithHome(home), "identities")
 	if err := os.MkdirAll(idsDir, 0o700); err != nil {
 		return "", err
 	}
@@ -2986,22 +3006,32 @@ func listIdentityCandidates(home string, currentPath string) []identityCandidate
 	}
 	addPath(currentPath)
 
-	legacy := filepath.Join(apphome.BaseDirWithHome(home), "ed25519_key.json")
-	addPath(legacy)
-
-	idsDir := filepath.Join(apphome.BaseDirWithHome(home), "identities")
-	if entries, err := os.ReadDir(idsDir); err == nil {
-		for _, e := range entries {
-			if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ".json") {
-				continue
+	if fileExists(currentPath) {
+		addPath(currentPath)
+	}
+	if fileExists(filepath.Join(apphome.CurrentDirWithHome(home), "ed25519_key.json")) {
+		addPath(filepath.Join(apphome.CurrentDirWithHome(home), "ed25519_key.json"))
+	}
+	if fileExists(filepath.Join(apphome.LegacyDirWithHome(home), "ed25519_key.json")) {
+		addPath(filepath.Join(apphome.LegacyDirWithHome(home), "ed25519_key.json"))
+	}
+	for _, idsDir := range []string{
+		filepath.Join(apphome.CurrentDirWithHome(home), "identities"),
+		filepath.Join(apphome.LegacyDirWithHome(home), "identities"),
+	} {
+		if entries, err := os.ReadDir(idsDir); err == nil {
+			for _, e := range entries {
+				if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ".json") {
+					continue
+				}
+				addPath(filepath.Join(idsDir, e.Name()))
 			}
-			addPath(filepath.Join(idsDir, e.Name()))
 		}
 	}
 
 	out := make([]identityCandidate, 0, len(paths))
 	for _, p := range paths {
-		priv, err := loadOrCreateKey(p)
+		priv, err := loadKey(p)
 		if err != nil {
 			continue
 		}
@@ -3071,7 +3101,7 @@ func promptIdentityPath(home string, currentPath string, conflictMode bool) (str
 		return p, nil
 	}
 	if n == createIdx {
-		idsDir := filepath.Join(apphome.BaseDirWithHome(home), "identities")
+		idsDir := filepath.Join(apphome.CurrentDirWithHome(home), "identities")
 		if err := os.MkdirAll(idsDir, 0o700); err != nil {
 			return "", err
 		}

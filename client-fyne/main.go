@@ -525,8 +525,20 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
 	return nil
 }
 
+func fileExists(path string) bool {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return !info.IsDir()
+}
+
 func profilePathForKey(home string, keyPath string) string {
-	return filepath.Join(apphome.BaseDirWithHome(home), "profiles", "profile-"+filepath.Base(strings.TrimSpace(keyPath))+".json")
+	return filepath.Join(apphome.BaseDirForKeyPath(home, keyPath), "profiles", "profile-"+filepath.Base(strings.TrimSpace(keyPath))+".json")
 }
 
 func loadDisplayName(home string, keyPath string) string {
@@ -583,21 +595,33 @@ func listIdentityCandidates(home string, currentPath string) []identityCandidate
 		paths = append(paths, p)
 	}
 	addPath(currentPath)
-	legacy := filepath.Join(apphome.BaseDirWithHome(home), "ed25519_key.json")
-	addPath(legacy)
-	idsDir := filepath.Join(apphome.BaseDirWithHome(home), "identities")
-	if entries, err := os.ReadDir(idsDir); err == nil {
-		for _, e := range entries {
-			if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ".json") {
-				continue
+
+	if fileExists(currentPath) {
+		addPath(currentPath)
+	}
+	if fileExists(filepath.Join(apphome.CurrentDirWithHome(home), "ed25519_key.json")) {
+		addPath(filepath.Join(apphome.CurrentDirWithHome(home), "ed25519_key.json"))
+	}
+	if fileExists(filepath.Join(apphome.LegacyDirWithHome(home), "ed25519_key.json")) {
+		addPath(filepath.Join(apphome.LegacyDirWithHome(home), "ed25519_key.json"))
+	}
+	for _, idsDir := range []string{
+		filepath.Join(apphome.CurrentDirWithHome(home), "identities"),
+		filepath.Join(apphome.LegacyDirWithHome(home), "identities"),
+	} {
+		if entries, err := os.ReadDir(idsDir); err == nil {
+			for _, e := range entries {
+				if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ".json") {
+					continue
+				}
+				addPath(filepath.Join(idsDir, e.Name()))
 			}
-			addPath(filepath.Join(idsDir, e.Name()))
 		}
 	}
 
 	out := make([]identityCandidate, 0, len(paths))
 	for _, p := range paths {
-		priv, err := loadOrCreateKey(p)
+		priv, err := loadKey(p)
 		if err != nil {
 			continue
 		}
@@ -967,7 +991,7 @@ func showLoginWindow(fy fyne.App, home string, defaultKeyPath string, state *app
 	}
 
 	createBtn := widget.NewButton("Create Identity", func() {
-		idsDir := filepath.Join(apphome.BaseDirWithHome(home), "identities")
+		idsDir := filepath.Join(apphome.CurrentDirWithHome(home), "identities")
 		if err := os.MkdirAll(idsDir, 0o700); err != nil {
 			showError(err)
 			return
@@ -1020,7 +1044,7 @@ func showLoginWindow(fy fyne.App, home string, defaultKeyPath string, state *app
 				return
 			}
 			priv := ed25519.NewKeyFromSeed(seed)
-			idsDir := filepath.Join(apphome.BaseDirWithHome(home), "identities")
+			idsDir := filepath.Join(apphome.CurrentDirWithHome(home), "identities")
 			if err := os.MkdirAll(idsDir, 0o700); err != nil {
 				showError(err)
 				return
