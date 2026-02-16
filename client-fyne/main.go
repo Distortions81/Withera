@@ -28,8 +28,8 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/widget"
-	"goaccord/internal/apphome"
-	"goaccord/internal/netsec"
+	"withera/internal/apphome"
+	"withera/internal/netsec"
 )
 
 type Packet struct {

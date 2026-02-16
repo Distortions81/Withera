@@ -28,8 +28,8 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"goaccord/internal/apphome"
-	"goaccord/internal/netsec"
+	"withera/internal/apphome"
+	"withera/internal/netsec"
 )
 
 type Packet struct {

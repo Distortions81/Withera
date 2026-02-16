@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"goaccord/internal/apphome"
-	"goaccord/internal/netsec"
+	"withera/internal/apphome"
+	"withera/internal/netsec"
 )
 
 func main() {

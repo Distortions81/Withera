@@ -34,8 +34,8 @@ import (
 	"time"
 
 	"github.com/skip2/go-qrcode"
-	"goaccord/internal/apphome"
-	"goaccord/internal/netsec"
+	"withera/internal/apphome"
+	"withera/internal/netsec"
 )
 
 type Packet struct {

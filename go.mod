@@ -1,4 +1,4 @@
-module goaccord
+module withera
 
 go 1.24.2
 

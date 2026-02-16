@@ -26,7 +26,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"goaccord/internal/netsec"
+	"withera/internal/netsec"
 )
 
 const (

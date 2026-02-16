@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"goaccord/internal/netsec"
+	"withera/internal/netsec"
 )
 
 type testClient struct {
