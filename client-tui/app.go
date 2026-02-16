@@ -33,20 +33,12 @@ import (
 	"withera/internal/netsec"
 )
 
-func isNameRuneAllowed(r rune) bool {
-	if r >= 'a' && r <= 'z' {
-		return true
-	}
-	if r >= 'A' && r <= 'Z' {
-		return true
-	}
-	if r >= '0' && r <= '9' {
-		return true
-	}
-	return r == '-' || r == '_' || r == '.'
-}
+const (
+	defaultMaxGroupNameBytes   = 64
+	defaultMaxChannelNameBytes = 48
+)
 
-func validateNodeName(kind string, value string) error {
+func validateNodeName(kind string, value string, maxBytes int) error {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return fmt.Errorf("%s is required", kind)
@@ -54,11 +46,14 @@ func validateNodeName(kind string, value string) error {
 	if !utf8.ValidString(value) {
 		return fmt.Errorf("%s must be valid utf-8", kind)
 	}
-	if strings.Contains(value, "/") {
-		return fmt.Errorf("%s cannot contain '/'", kind)
+	if maxBytes <= 0 {
+		maxBytes = 1
+	}
+	if len(value) > maxBytes {
+		return fmt.Errorf("%s too long (max %d bytes)", kind, maxBytes)
 	}
 	for _, r := range value {
-		if !isNameRuneAllowed(r) {
+		if r < 0x20 || r == 0x7f || r == '/' {
 			return fmt.Errorf("%s contains invalid character %q", kind, r)
 		}
 	}
@@ -849,35 +844,35 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			directCtx := ""
-				if strings.TrimSpace(m.group) != "" || strings.TrimSpace(m.channel) != "" {
-					if strings.TrimSpace(m.group) == "" || strings.TrimSpace(m.channel) == "" {
-						return m, logLine("set both /group and /channel, or use /chat for direct messages")
-					}
-					if err := m.sendSigned(Packet{Type: "channel_send", Group: m.group, Channel: m.channel, Body: line}); err != nil {
-						channelCtx := groupChannelKey(m.group, m.channel)
-						m.addChatEntry("system", "unable to send: "+err.Error(), "", channelCtx)
-						return m, nil
-					}
-					// Channel sends are echoed back by the server to the sender.
-					// Avoid local append to prevent duplicate self-messages.
+			if strings.TrimSpace(m.group) != "" || strings.TrimSpace(m.channel) != "" {
+				if strings.TrimSpace(m.group) == "" || strings.TrimSpace(m.channel) == "" {
+					return m, logLine("set both /group and /channel, or use /chat for direct messages")
+				}
+				if err := m.sendSigned(Packet{Type: "channel_send", Group: m.group, Channel: m.channel, Body: line}); err != nil {
+					channelCtx := groupChannelKey(m.group, m.channel)
+					m.addChatEntry("system", "unable to send: "+err.Error(), "", channelCtx)
 					return m, nil
 				}
+				// Channel sends are echoed back by the server to the sender.
+				// Avoid local append to prevent duplicate self-messages.
+				return m, nil
+			}
 
-				if strings.TrimSpace(m.to) == "" {
-					return m, logLine("set recipient with /to <login_id|alias> or /chat <login_id|alias>")
-				}
-				encryptedBody, err := m.encryptDirectMessage(m.to, line)
-				if err != nil {
-					m.addChatEntry("system", err.Error(), m.to, "")
-					return m, nil
-				}
-				if err := m.sendSigned(Packet{Type: "send", To: m.to, Body: encryptedBody}); err != nil {
-					m.addChatEntry("system", "unable to send: "+err.Error(), m.to, "")
-					return m, nil
-				}
-				if m.displayPeer(m.to) == shortID(m.to) {
-					m.requestProfile(m.to)
-				}
+			if strings.TrimSpace(m.to) == "" {
+				return m, logLine("set recipient with /to <login_id|alias> or /chat <login_id|alias>")
+			}
+			encryptedBody, err := m.encryptDirectMessage(m.to, line)
+			if err != nil {
+				m.addChatEntry("system", err.Error(), m.to, "")
+				return m, nil
+			}
+			if err := m.sendSigned(Packet{Type: "send", To: m.to, Body: encryptedBody}); err != nil {
+				m.addChatEntry("system", "unable to send: "+err.Error(), m.to, "")
+				return m, nil
+			}
+			if m.displayPeer(m.to) == shortID(m.to) {
+				m.requestProfile(m.to)
+			}
 			directCtx = m.to
 			m.addChatEntry(m.displayName, line, directCtx, "")
 			return m, nil
@@ -1069,24 +1064,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.setPresence(msg.pkt.From, msg.pkt.Body, 0)
 			}
 			return m, waitNet(m.events)
-			case "error":
-				body := strings.TrimSpace(msg.pkt.Body)
-				if body == "" {
-					return m, waitNet(m.events)
-				}
-				if strings.TrimSpace(m.group) != "" && strings.TrimSpace(m.channel) != "" {
-					channelCtx := groupChannelKey(m.group, m.channel)
-					m.addChatEntry("system", "node error: "+body, "", channelCtx)
-				} else if strings.TrimSpace(m.to) != "" {
-					m.addChatEntry("system", "node error: "+body, m.to, "")
-				} else {
-					m.addInfoEntry("server error: " + body)
-				}
+		case "error":
+			body := strings.TrimSpace(msg.pkt.Body)
+			if body == "" {
 				return m, waitNet(m.events)
-			default:
-				b, _ := json.Marshal(msg.pkt)
-				m.addInfoEntry("server: " + string(b))
-				return m, waitNet(m.events)
+			}
+			if strings.TrimSpace(m.group) != "" && strings.TrimSpace(m.channel) != "" {
+				channelCtx := groupChannelKey(m.group, m.channel)
+				m.addChatEntry("system", "node error: "+body, "", channelCtx)
+			} else if strings.TrimSpace(m.to) != "" {
+				m.addChatEntry("system", "node error: "+body, m.to, "")
+			} else {
+				m.addInfoEntry("server error: " + body)
+			}
+			return m, waitNet(m.events)
+		default:
+			b, _ := json.Marshal(msg.pkt)
+			m.addInfoEntry("server: " + string(b))
+			return m, waitNet(m.events)
 		}
 	case localMsg:
 		m.addInfoEntry(msg.line)
@@ -1725,8 +1720,8 @@ func (m *model) handleCommand(line string) tea.Cmd {
 			return logLine("usage: /group <name>")
 		}
 		group := strings.TrimSpace(parts[1])
-		if err := validateNodeName("group", group); err != nil {
-			return logLine(err.Error() + " (allowed: letters/numbers and - _ .)")
+		if err := validateNodeName("group", group, defaultMaxGroupNameBytes); err != nil {
+			return logLine(err.Error())
 		}
 		m.group = group
 		m.persistUIState()
@@ -1736,8 +1731,8 @@ func (m *model) handleCommand(line string) tea.Cmd {
 			return logLine("usage: /channel <name>")
 		}
 		channel := strings.TrimSpace(parts[1])
-		if err := validateNodeName("channel", channel); err != nil {
-			return logLine(err.Error() + " (allowed: letters/numbers and - _ .)")
+		if err := validateNodeName("channel", channel, defaultMaxChannelNameBytes); err != nil {
+			return logLine(err.Error())
 		}
 		m.channel = channel
 		m.persistUIState()
@@ -1806,11 +1801,11 @@ func (m *model) handleCommand(line string) tea.Cmd {
 		}
 		group := strings.TrimSpace(parts[1])
 		channel := strings.TrimSpace(parts[2])
-		if err := validateNodeName("group", group); err != nil {
-			return logLine(err.Error() + " (allowed: letters/numbers and - _ .)")
+		if err := validateNodeName("group", group, defaultMaxGroupNameBytes); err != nil {
+			return logLine(err.Error())
 		}
-		if err := validateNodeName("channel", channel); err != nil {
-			return logLine(err.Error() + " (allowed: letters/numbers and - _ .)")
+		if err := validateNodeName("channel", channel, defaultMaxChannelNameBytes); err != nil {
+			return logLine(err.Error())
 		}
 		mode := strings.ToLower(strings.TrimSpace(parts[3]))
 		isPublic := mode == "public"
@@ -1846,11 +1841,11 @@ func (m *model) handleCommand(line string) tea.Cmd {
 		}
 		group := strings.TrimSpace(parts[1])
 		channel := strings.TrimSpace(parts[2])
-		if err := validateNodeName("group", group); err != nil {
-			return logLine(err.Error() + " (allowed: letters/numbers and - _ .)")
+		if err := validateNodeName("group", group, defaultMaxGroupNameBytes); err != nil {
+			return logLine(err.Error())
 		}
-		if err := validateNodeName("channel", channel); err != nil {
-			return logLine(err.Error() + " (allowed: letters/numbers and - _ .)")
+		if err := validateNodeName("channel", channel, defaultMaxChannelNameBytes); err != nil {
+			return logLine(err.Error())
 		}
 		if err := m.sendSigned(Packet{Type: "channel_join", Group: group, Channel: channel}); err != nil {
 			return logLine("channel-join error: " + err.Error())
@@ -1867,11 +1862,11 @@ func (m *model) handleCommand(line string) tea.Cmd {
 		}
 		group := strings.TrimSpace(parts[1])
 		channel := strings.TrimSpace(parts[2])
-		if err := validateNodeName("group", group); err != nil {
-			return logLine(err.Error() + " (allowed: letters/numbers and - _ .)")
+		if err := validateNodeName("group", group, defaultMaxGroupNameBytes); err != nil {
+			return logLine(err.Error())
 		}
-		if err := validateNodeName("channel", channel); err != nil {
-			return logLine(err.Error() + " (allowed: letters/numbers and - _ .)")
+		if err := validateNodeName("channel", channel, defaultMaxChannelNameBytes); err != nil {
+			return logLine(err.Error())
 		}
 		if err := m.sendSigned(Packet{Type: "channel_leave", Group: group, Channel: channel}); err != nil {
 			return logLine("channel-leave error: " + err.Error())

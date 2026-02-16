@@ -320,15 +320,15 @@ func NewServer(id, ownerPubKeyB64 string, ownerPriv ed25519.PrivateKey, advertis
 		peerScore:                make(map[string]int),
 		peerBanned:               make(map[string]time.Time),
 		peerBanScore:             defaultPeerBanScore,
-			peerBanFor:               defaultPeerBanFor,
-			friends:                  make(map[string]map[string]struct{}),
-			friendAdds:               make(map[string]map[string]struct{}),
-			friendAddBodies:          make(map[string]map[string]string),
-			channels:                 make(map[string]*ChannelState),
-			profiles:                 make(map[string]profilePayload),
-			profileUpdated:           make(map[string]int64),
-			groupProfiles:            make(map[string]groupProfilePayload),
-			groupProfileUpdated:      make(map[string]int64),
+		peerBanFor:               defaultPeerBanFor,
+		friends:                  make(map[string]map[string]struct{}),
+		friendAdds:               make(map[string]map[string]struct{}),
+		friendAddBodies:          make(map[string]map[string]string),
+		channels:                 make(map[string]*ChannelState),
+		profiles:                 make(map[string]profilePayload),
+		profileUpdated:           make(map[string]int64),
+		groupProfiles:            make(map[string]groupProfilePayload),
+		groupProfileUpdated:      make(map[string]int64),
 		presence:                 make(map[string]presenceState),
 		routes:                   make(map[string]userRoute),
 		startedAt:                time.Now(),
@@ -1340,20 +1340,7 @@ func channelKey(group string, channel string) string {
 	return strings.TrimSpace(group) + "/" + strings.TrimSpace(channel)
 }
 
-func isNameRuneAllowed(r rune) bool {
-	if r >= 'a' && r <= 'z' {
-		return true
-	}
-	if r >= 'A' && r <= 'Z' {
-		return true
-	}
-	if r >= '0' && r <= '9' {
-		return true
-	}
-	return r == '-' || r == '_' || r == '.'
-}
-
-func validateBoundedName(kind string, value string, maxRunes int) (string, error) {
+func validateBoundedName(kind string, value string, maxBytes int) (string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return "", fmt.Errorf("%s is required", kind)
@@ -1361,17 +1348,23 @@ func validateBoundedName(kind string, value string, maxRunes int) (string, error
 	if !utf8.ValidString(value) {
 		return "", fmt.Errorf("%s must be valid utf-8", kind)
 	}
-	if maxRunes <= 0 {
-		maxRunes = 1
+	if maxBytes <= 0 {
+		maxBytes = 1
 	}
-	if utf8.RuneCountInString(value) > maxRunes {
-		return "", fmt.Errorf("%s too long (max %d chars)", kind, maxRunes)
+	if len(value) > maxBytes {
+		return "", fmt.Errorf("%s too long (max %d bytes)", kind, maxBytes)
 	}
 	if strings.Contains(value, "/") {
 		return "", fmt.Errorf("%s cannot contain '/'", kind)
 	}
 	for _, r := range value {
-		if !isNameRuneAllowed(r) {
+		if r < 0x20 || r == 0x7f {
+			return "", fmt.Errorf("%s contains invalid character %q", kind, r)
+		}
+		if r == '/' {
+			return "", fmt.Errorf("%s cannot contain '/'", kind)
+		}
+		if !utf8.ValidRune(r) {
 			return "", fmt.Errorf("%s contains invalid character %q", kind, r)
 		}
 	}
@@ -2724,35 +2717,35 @@ func (s *Server) forwardToPeers(exceptID string, p Packet) {
 		if hasRemoteMembers && (unknownRoute || len(targetIDs) == 0) {
 			shouldFlood = true
 		}
-		case strings.TrimSpace(p.To) != "":
-			if len(s.users[p.To]) > 0 {
-				break
-			}
-			route, ok := s.routes[p.To]
-			if !ok {
-				shouldFlood = true
-				break
-			}
-			if time.Since(route.seenAt) > routeEntryTTL {
-				delete(s.routes, p.To)
-				shouldFlood = true
-				break
-			}
-			if route.peerID == "" {
-				// Stale "local" hint: the user isn't actually connected here. Flood so the packet can reach the
-				// correct node, instead of being silently dropped.
-				shouldFlood = true
-				break
-			}
-			if route.peerID == exceptID {
-				// We can't send it back where it came from; treat as stale/ambiguous and flood.
-				shouldFlood = true
-				break
-			}
-			if _, ok := relayPeers[route.peerID]; ok {
-				targetIDs[route.peerID] = struct{}{}
-				break
-			}
+	case strings.TrimSpace(p.To) != "":
+		if len(s.users[p.To]) > 0 {
+			break
+		}
+		route, ok := s.routes[p.To]
+		if !ok {
+			shouldFlood = true
+			break
+		}
+		if time.Since(route.seenAt) > routeEntryTTL {
+			delete(s.routes, p.To)
+			shouldFlood = true
+			break
+		}
+		if route.peerID == "" {
+			// Stale "local" hint: the user isn't actually connected here. Flood so the packet can reach the
+			// correct node, instead of being silently dropped.
+			shouldFlood = true
+			break
+		}
+		if route.peerID == exceptID {
+			// We can't send it back where it came from; treat as stale/ambiguous and flood.
+			shouldFlood = true
+			break
+		}
+		if _, ok := relayPeers[route.peerID]; ok {
+			targetIDs[route.peerID] = struct{}{}
+			break
+		}
 		shouldFlood = true
 	default:
 		shouldFlood = true

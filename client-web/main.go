@@ -1682,28 +1682,28 @@ func (c *webClient) networkLoop(ch <-chan netMsg) {
 			} else {
 				c.setPresence(p.From, p.Body, 0)
 			}
-			case "error":
-				if c.pruneUnknownGroupOrChannel(p.Body) {
-					c.addEvent("info", "removed stale group/channel from UI")
-				}
-				c.mu.Lock()
-				ctx := c.lastContext
-				c.mu.Unlock()
-				body := strings.TrimSpace(p.Body)
-				if body != "" {
-					switch strings.ToLower(strings.TrimSpace(ctx.Mode)) {
-					case "group":
-						c.addSystemChatEvent("group", "", ctx.Group, ctx.Channel, "node error: "+body)
-					case "dm":
-						c.addSystemChatEvent("dm", ctx.Target, "", "", "node error: "+body)
-					default:
-						c.addEvent("info", "node error: "+body)
-					}
-				}
-			default:
-				raw, _ := json.Marshal(p)
-				c.addEvent("info", "node: "+string(raw))
+		case "error":
+			if c.pruneUnknownGroupOrChannel(p.Body) {
+				c.addEvent("info", "removed stale group/channel from UI")
 			}
+			c.mu.Lock()
+			ctx := c.lastContext
+			c.mu.Unlock()
+			body := strings.TrimSpace(p.Body)
+			if body != "" {
+				switch strings.ToLower(strings.TrimSpace(ctx.Mode)) {
+				case "group":
+					c.addSystemChatEvent("group", "", ctx.Group, ctx.Channel, "node error: "+body)
+				case "dm":
+					c.addSystemChatEvent("dm", ctx.Target, "", "", "node error: "+body)
+				default:
+					c.addEvent("info", "node error: "+body)
+				}
+			}
+		default:
+			raw, _ := json.Marshal(p)
+			c.addEvent("info", "node: "+string(raw))
+		}
 	}
 }
 
@@ -2043,7 +2043,7 @@ func (c *webClient) handleGroupProfileSet(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "group required"})
 		return
 	}
-	if err := validateNameLikeNode("group", group); err != nil {
+	if err := validateNameLikeNode("group", group, defaultMaxGroupNameBytes); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
@@ -2244,20 +2244,12 @@ func normalizeChannelName(v string) string {
 	return v
 }
 
-func isNameRuneAllowed(r rune) bool {
-	if r >= 'a' && r <= 'z' {
-		return true
-	}
-	if r >= 'A' && r <= 'Z' {
-		return true
-	}
-	if r >= '0' && r <= '9' {
-		return true
-	}
-	return r == '-' || r == '_' || r == '.'
-}
+const (
+	defaultMaxGroupNameBytes   = 64
+	defaultMaxChannelNameBytes = 48
+)
 
-func validateNameLikeNode(kind string, value string) error {
+func validateNameLikeNode(kind string, value string, maxBytes int) error {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return fmt.Errorf("%s is required", kind)
@@ -2265,28 +2257,42 @@ func validateNameLikeNode(kind string, value string) error {
 	if !utf8.ValidString(value) {
 		return fmt.Errorf("%s must be valid utf-8", kind)
 	}
-	if strings.Contains(value, "/") {
-		return fmt.Errorf("%s cannot contain '/'", kind)
+	if maxBytes <= 0 {
+		maxBytes = 1
+	}
+	if len(value) > maxBytes {
+		return fmt.Errorf("%s too long (max %d bytes)", kind, maxBytes)
 	}
 	for _, r := range value {
-		if !isNameRuneAllowed(r) {
+		if r < 0x20 || r == 0x7f || r == '/' {
 			return fmt.Errorf("%s contains invalid character %q", kind, r)
 		}
 	}
 	return nil
 }
 
+type inviteKeyPayload struct {
+	From  string `json:"from"`
+	Group string `json:"group"`
+}
+
 func channelInviteKey(from string, group string) string {
-	return strings.TrimSpace(from) + "|" + normalizeGroupName(group)
+	payload := inviteKeyPayload{From: strings.TrimSpace(from), Group: normalizeGroupName(group)}
+	raw, _ := json.Marshal(payload)
+	return base64.RawURLEncoding.EncodeToString(raw)
 }
 
 func parseChannelInviteKey(v string) (from string, group string, ok bool) {
-	parts := strings.Split(strings.TrimSpace(v), "|")
-	if len(parts) != 2 {
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(v))
+	if err != nil {
 		return "", "", false
 	}
-	from = strings.TrimSpace(parts[0])
-	group = normalizeGroupName(parts[1])
+	var payload inviteKeyPayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return "", "", false
+	}
+	from = strings.TrimSpace(payload.From)
+	group = normalizeGroupName(payload.Group)
 	if !looksLikeLoginID(from) || group == "" {
 		return "", "", false
 	}
@@ -2351,11 +2357,11 @@ func (c *webClient) handleGroupCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "group required"})
 		return
 	}
-	if err := validateNameLikeNode("group", group); err != nil {
+	if err := validateNameLikeNode("group", group, defaultMaxGroupNameBytes); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	if err := validateNameLikeNode("channel", channel); err != nil {
+	if err := validateNameLikeNode("channel", channel, defaultMaxChannelNameBytes); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
@@ -2386,11 +2392,11 @@ func (c *webClient) handleGroupJoin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "group required"})
 		return
 	}
-	if err := validateNameLikeNode("group", group); err != nil {
+	if err := validateNameLikeNode("group", group, defaultMaxGroupNameBytes); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	if err := validateNameLikeNode("channel", channel); err != nil {
+	if err := validateNameLikeNode("channel", channel, defaultMaxChannelNameBytes); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
@@ -2419,11 +2425,11 @@ func (c *webClient) handleGroupSend(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "group and text required"})
 		return
 	}
-	if err := validateNameLikeNode("group", group); err != nil {
+	if err := validateNameLikeNode("group", group, defaultMaxGroupNameBytes); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	if err := validateNameLikeNode("channel", channel); err != nil {
+	if err := validateNameLikeNode("channel", channel, defaultMaxChannelNameBytes); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
