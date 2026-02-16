@@ -7,8 +7,9 @@
   <style>
     [hidden] { display:none !important; }
     :root { --bg:#0d1217; --panel:#151d25; --text:#e6edf3; --muted:#8e9aa7; --accent:#55b2ff; --line:#263341; }
+    html, body { width:100%; height:100%; overflow:hidden; }
     body { margin:0; font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:15px; background:var(--bg); color:var(--text); }
-    .wrap { width:100vw; height:100vh; margin:0; padding:10px; box-sizing:border-box; display:grid; grid-template-columns: minmax(320px, 380px) 1fr; gap:10px; }
+    .wrap { width:100%; height:100dvh; margin:0; padding:10px; box-sizing:border-box; display:grid; grid-template-columns: minmax(320px, 380px) 1fr; gap:10px; overflow:hidden; }
     .mode-dm #friendList { border-color:#78c8ff; box-shadow:0 0 0 1px rgba(120,200,255,.22) inset; }
     .mode-group #channelList { border-color:#65d59c; box-shadow:0 0 0 1px rgba(101,213,156,.2) inset; }
     .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px; display:flex; flex-direction:column; min-height:0; }
@@ -296,7 +297,7 @@
     .recovery-qr-wrap { display:flex; justify-content:center; margin-top:10px; }
     .recovery-qr-wrap img { width:256px; max-width:80vw; height:auto; background:#fff; padding:8px; border-radius:8px; }
     @media (max-width: 900px) {
-      .wrap { height:auto; min-height:100vh; grid-template-columns: 1fr; }
+      .wrap { height:100dvh; min-height:0; grid-template-columns: 1fr; }
       .profile-card { left:12px; right:12px; top:12px; width:auto; }
       .profile-editor { width:calc(100% - 20px); }
       .friend-editor { width:calc(100% - 20px); }
