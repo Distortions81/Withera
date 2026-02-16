@@ -118,6 +118,8 @@ On accept, node normalizes local processing to uncompressed body.
 ### Profile/presence
 
 - `profile_set` / `profile_get` produce `profile_data`.
+- `profile_set` payload may include `profile_image` as an image data URL (`data:image/...;base64,...`).
+- Node enforces `profile_image` decoded size limit: max `16384` bytes (16 KiB); oversized payloads are rejected with protocol `error`.
 - `presence_keepalive` updates visibility state.
 - `presence_get` returns `presence_data`.
 

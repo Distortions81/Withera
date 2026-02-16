@@ -53,6 +53,7 @@ const (
 	defaultMaxChannelsPerGroup  = 64
 	defaultMaxGroupNameRunes    = 64
 	defaultMaxChannelNameRunes  = 48
+	maxProfileImageBytes        = 16 * 1024
 )
 
 type Packet struct {
@@ -87,8 +88,9 @@ type hopRef struct {
 }
 
 type profilePayload struct {
-	Nickname    string `json:"nickname,omitempty"`
-	ProfileText string `json:"profile_text,omitempty"`
+	Nickname     string `json:"nickname,omitempty"`
+	ProfileText  string `json:"profile_text,omitempty"`
+	ProfileImage string `json:"profile_image,omitempty"`
 }
 
 type presencePayload struct {
@@ -1311,6 +1313,43 @@ func validateBoundedName(kind string, value string, maxRunes int) (string, error
 	return value, nil
 }
 
+func validateProfileImageDataURL(dataURL string, maxBytes int) error {
+	dataURL = strings.TrimSpace(dataURL)
+	if dataURL == "" {
+		return nil
+	}
+	if maxBytes <= 0 {
+		maxBytes = maxProfileImageBytes
+	}
+	lower := strings.ToLower(dataURL)
+	if !strings.HasPrefix(lower, "data:image/") {
+		return fmt.Errorf("profile_image must be an image data URL")
+	}
+	comma := strings.IndexByte(dataURL, ',')
+	if comma <= 0 {
+		return fmt.Errorf("profile_image must be a valid data URL")
+	}
+	meta := strings.ToLower(strings.TrimSpace(dataURL[:comma]))
+	if !strings.Contains(meta, ";base64") {
+		return fmt.Errorf("profile_image must be base64-encoded")
+	}
+	encoded := strings.TrimSpace(dataURL[comma+1:])
+	if encoded == "" {
+		return fmt.Errorf("profile_image data missing")
+	}
+	raw, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		raw, err = base64.RawStdEncoding.DecodeString(encoded)
+		if err != nil {
+			return fmt.Errorf("profile_image base64 decode failed")
+		}
+	}
+	if len(raw) > maxBytes {
+		return fmt.Errorf("profile_image exceeds %d bytes", maxBytes)
+	}
+	return nil
+}
+
 func (s *Server) normalizeGroupAndChannel(group string, channel string, channelOptional bool) (string, string, error) {
 	groupName, err := validateBoundedName("group", group, s.maxGroupNameRunes)
 	if err != nil {
@@ -1715,6 +1754,11 @@ func (s *Server) handleProfileSet(p Packet) {
 	}
 	payload.Nickname = strings.TrimSpace(payload.Nickname)
 	payload.ProfileText = strings.TrimSpace(payload.ProfileText)
+	payload.ProfileImage = strings.TrimSpace(payload.ProfileImage)
+	if err := validateProfileImageDataURL(payload.ProfileImage, maxProfileImageBytes); err != nil {
+		s.sendProtocolError(p.From, "profile_set failed: "+err.Error())
+		return
+	}
 
 	s.mu.Lock()
 	s.profiles[p.From] = payload

@@ -104,6 +104,7 @@ type savedFriendNonce struct {
 type profileFile struct {
 	DisplayName   string          `json:"display_name"`
 	ProfileText   string          `json:"profile_text"`
+	ProfileImage  string          `json:"profile_image,omitempty"`
 	PeerNicknames []savedNickname `json:"peer_nicknames"`
 	PeerProfiles  []savedProfile  `json:"peer_profiles"`
 }
@@ -116,8 +117,9 @@ type chatContext struct {
 }
 
 type uiStateFile struct {
-	Groups      []groupEntry `json:"groups,omitempty"`
-	LastContext chatContext  `json:"last_context,omitempty"`
+	Groups      []groupEntry      `json:"groups,omitempty"`
+	LastContext chatContext       `json:"last_context,omitempty"`
+	GroupIcons  map[string]string `json:"group_icons,omitempty"`
 }
 
 type savedNickname struct {
@@ -181,6 +183,31 @@ func profilePathForKey(home string, keyPath string) string {
 	return filepath.Join(home, ".goaccord", "profiles", "profile-"+filepath.Base(strings.TrimSpace(keyPath))+".json")
 }
 
+func lastUsedIdentityPath(home string) string {
+	return filepath.Join(home, ".goaccord", "web_last_identity.txt")
+}
+
+func loadLastUsedIdentity(home string) string {
+	path := lastUsedIdentityPath(home)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+func saveLastUsedIdentity(home string, keyPath string) {
+	keyPath = strings.TrimSpace(keyPath)
+	if keyPath == "" {
+		return
+	}
+	path := lastUsedIdentityPath(home)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return
+	}
+	_ = os.WriteFile(path, []byte(keyPath+"\n"), 0o600)
+}
+
 func uiStatePathForProfile(profilePath string) string {
 	return strings.TrimSpace(profilePath) + ".ui.json"
 }
@@ -236,6 +263,7 @@ type groupEntry struct {
 	OwnerID     string   `json:"owner_id,omitempty"`
 	OwnerUserID string   `json:"owner_user_id,omitempty"`
 	OwnerLabel  string   `json:"owner_label,omitempty"`
+	Icon        string   `json:"icon,omitempty"`
 }
 
 type webClient struct {
@@ -251,6 +279,7 @@ type webClient struct {
 	loginID       string
 	displayName   string
 	profileText   string
+	profileImage  string
 	contactsPath  string
 	profilePath   string
 	uiStatePath   string
@@ -271,6 +300,7 @@ type webClient struct {
 	groups           map[string]map[string]struct{}
 	ownedGroups      map[string]struct{}
 	groupOwners      map[string]string
+	groupIcons       map[string]string
 	lastContext      chatContext
 	pendingPings     map[string]int64
 	seenChatIDs      map[string]struct{}
@@ -741,7 +771,7 @@ func (c *webClient) upsertNickname(loginID, nick string) {
 	peerCopy := cloneStringMap(c.peerProfiles)
 	refCopy := cloneInt64Map(c.profileRefreshed)
 	c.mu.Unlock()
-	_ = saveProfile(c.profilePath, displayName, profileText, nickCopy, peerCopy, refCopy)
+	_ = saveProfile(c.profilePath, displayName, profileText, "", false, nickCopy, peerCopy, refCopy)
 }
 
 func (c *webClient) upsertPeerProfile(loginID, text string) {
@@ -759,7 +789,7 @@ func (c *webClient) upsertPeerProfile(loginID, text string) {
 	peerCopy := cloneStringMap(c.peerProfiles)
 	refCopy := cloneInt64Map(c.profileRefreshed)
 	c.mu.Unlock()
-	_ = saveProfile(c.profilePath, displayName, profileText, nickCopy, peerCopy, refCopy)
+	_ = saveProfile(c.profilePath, displayName, profileText, "", false, nickCopy, peerCopy, refCopy)
 }
 
 func (c *webClient) rememberGroup(group string, channel string) {
@@ -788,6 +818,7 @@ func (c *webClient) forgetGroup(group string) {
 	delete(c.groups, group)
 	delete(c.ownedGroups, group)
 	delete(c.groupOwners, group)
+	delete(c.groupIcons, group)
 	c.mu.Unlock()
 	c.persistUIState()
 }
@@ -1350,7 +1381,15 @@ func (c *webClient) groupsList() []groupEntry {
 			ownerLabel = c.displayPeerLocked(ownerID)
 			ownerUserID = userIDForLoginID(ownerID)
 		}
-		out = append(out, groupEntry{Name: g, Channels: channels, Owned: owned, OwnerID: ownerID, OwnerUserID: ownerUserID, OwnerLabel: ownerLabel})
+		out = append(out, groupEntry{
+			Name:        g,
+			Channels:    channels,
+			Owned:       owned,
+			OwnerID:     ownerID,
+			OwnerUserID: ownerUserID,
+			OwnerLabel:  ownerLabel,
+			Icon:        strings.TrimSpace(c.groupIcons[g]),
+		})
 	}
 	return out
 }
@@ -1360,8 +1399,9 @@ func (c *webClient) persistUIState() {
 	c.mu.Lock()
 	ctx := c.lastContext
 	path := c.uiStatePath
+	icons := cloneStringMap(c.groupIcons)
 	c.mu.Unlock()
-	_ = saveUIState(path, groups, ctx)
+	_ = saveUIState(path, groups, ctx, icons)
 }
 
 func (c *webClient) setLastContext(ctx chatContext) {
@@ -1388,6 +1428,49 @@ func (c *webClient) handleContextSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.setLastContext(req)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (c *webClient) handleGroupIconSet(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Group string `json:"group"`
+		Icon  string `json:"icon"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+	group := strings.TrimSpace(req.Group)
+	if group == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "group required"})
+		return
+	}
+	icon, err := sanitizeGroupIconDataURL(req.Icon)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	c.mu.Lock()
+	if _, ok := c.ownedGroups[group]; !ok {
+		c.mu.Unlock()
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "group must be owned by current user"})
+		return
+	}
+	if _, ok := c.groups[group]; !ok {
+		c.mu.Unlock()
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unknown group"})
+		return
+	}
+	if c.groupIcons == nil {
+		c.groupIcons = make(map[string]string)
+	}
+	if icon == "" {
+		delete(c.groupIcons, group)
+	} else {
+		c.groupIcons[group] = icon
+	}
+	c.mu.Unlock()
+	c.persistUIState()
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -1424,6 +1507,7 @@ func (c *webClient) handleBootstrap(w http.ResponseWriter, _ *http.Request) {
 		"user_id":           userIDForLoginID(c.loginID),
 		"display_name":      c.displayName,
 		"profile_text":      c.profileText,
+		"profile_image":     c.profileImage,
 		"targets":           c.dmTargets(),
 		"pending_friends":   c.pendingFriendRequests(),
 		"pending_invites":   c.pendingChannelInvites(),
@@ -1988,8 +2072,10 @@ func (c *webClient) handleE2EERotate(w http.ResponseWriter, r *http.Request) {
 
 func (c *webClient) handleProfileSet(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		DisplayName string `json:"display_name"`
-		ProfileText string `json:"profile_text"`
+		DisplayName     string `json:"display_name"`
+		ProfileText     string `json:"profile_text"`
+		ProfileImage    string `json:"profile_image"`
+		ProfileImageSet bool   `json:"profile_image_set"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
@@ -2001,14 +2087,23 @@ func (c *webClient) handleProfileSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	text := strings.TrimSpace(req.ProfileText)
+	img, err := sanitizeProfileImageDataURL(req.ProfileImage)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 	c.mu.Lock()
 	c.displayName = name
 	c.profileText = text
+	if req.ProfileImageSet {
+		c.profileImage = img
+	}
 	nicks := cloneStringMap(c.nicknames)
 	peers := cloneStringMap(c.peerProfiles)
 	refs := cloneInt64Map(c.profileRefreshed)
+	profileImage := c.profileImage
 	c.mu.Unlock()
-	if err := saveProfile(c.profilePath, name, text, nicks, peers, refs); err != nil {
+	if err := saveProfile(c.profilePath, name, text, profileImage, req.ProfileImageSet, nicks, peers, refs); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
@@ -2277,29 +2372,47 @@ func writeContactsAtomic(path string, contacts map[string]string) error {
 	return writeFileAtomic(path, payload, 0o600)
 }
 
-func loadUIState(path string) ([]groupEntry, chatContext, error) {
+func loadUIState(path string) ([]groupEntry, chatContext, map[string]string, error) {
 	if strings.TrimSpace(path) == "" {
-		return nil, chatContext{}, nil
+		return nil, chatContext{}, nil, nil
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, chatContext{}, nil
+			return nil, chatContext{}, nil, nil
 		}
-		return nil, chatContext{}, err
+		return nil, chatContext{}, nil, err
 	}
 	var f uiStateFile
 	if err := json.Unmarshal(data, &f); err != nil {
-		return nil, chatContext{}, err
+		return nil, chatContext{}, nil, err
 	}
-	return f.Groups, f.LastContext, nil
+	icons := make(map[string]string, len(f.GroupIcons))
+	for g, icon := range f.GroupIcons {
+		g = strings.TrimSpace(g)
+		icon = strings.TrimSpace(icon)
+		if g == "" {
+			continue
+		}
+		icons[g] = icon
+	}
+	return f.Groups, f.LastContext, icons, nil
 }
 
-func saveUIState(path string, groups []groupEntry, ctx chatContext) error {
+func saveUIState(path string, groups []groupEntry, ctx chatContext, groupIcons map[string]string) error {
 	if strings.TrimSpace(path) == "" {
 		return nil
 	}
-	f := uiStateFile{Groups: groups, LastContext: ctx}
+	icons := make(map[string]string, len(groupIcons))
+	for g, icon := range groupIcons {
+		g = strings.TrimSpace(g)
+		icon = strings.TrimSpace(icon)
+		if g == "" {
+			continue
+		}
+		icons[g] = icon
+	}
+	f := uiStateFile{Groups: groups, LastContext: ctx, GroupIcons: icons}
 	payload, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		return err
@@ -2307,20 +2420,20 @@ func saveUIState(path string, groups []groupEntry, ctx chatContext) error {
 	return writeFileAtomic(path, payload, 0o600)
 }
 
-func loadProfile(path string) (string, string, map[string]string, map[string]string, map[string]int64, error) {
+func loadProfile(path string) (string, string, string, map[string]string, map[string]string, map[string]int64, error) {
 	nicks := make(map[string]string)
 	peers := make(map[string]string)
 	refs := make(map[string]int64)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return "", "", nicks, peers, refs, nil
+			return "", "", "", nicks, peers, refs, nil
 		}
-		return "", "", nil, nil, nil, err
+		return "", "", "", nil, nil, nil, err
 	}
 	var f profileFile
 	if err := json.Unmarshal(data, &f); err != nil {
-		return "", "", nil, nil, nil, err
+		return "", "", "", nil, nil, nil, err
 	}
 	for _, n := range f.PeerNicknames {
 		id := strings.TrimSpace(n.LoginID)
@@ -2341,11 +2454,11 @@ func loadProfile(path string) (string, string, map[string]string, map[string]str
 			refs[id] = p.RefreshedAt
 		}
 	}
-	return strings.TrimSpace(f.DisplayName), strings.TrimSpace(f.ProfileText), nicks, peers, refs, nil
+	return strings.TrimSpace(f.DisplayName), strings.TrimSpace(f.ProfileText), strings.TrimSpace(f.ProfileImage), nicks, peers, refs, nil
 }
 
-func saveProfile(path string, displayName string, profileText string, nicknames map[string]string, peerProfiles map[string]string, refreshed map[string]int64) error {
-	existingName, existingText, existingNicks, existingPeers, existingRefs, err := loadProfile(path)
+func saveProfile(path string, displayName string, profileText string, profileImage string, profileImageSet bool, nicknames map[string]string, peerProfiles map[string]string, refreshed map[string]int64) error {
+	existingName, existingText, existingImage, existingNicks, existingPeers, existingRefs, err := loadProfile(path)
 	if err != nil {
 		return err
 	}
@@ -2380,10 +2493,14 @@ func saveProfile(path string, displayName string, profileText string, nicknames 
 	if text == "" {
 		text = strings.TrimSpace(existingText)
 	}
-	return writeProfileAtomic(path, name, text, mergedNicks, mergedPeers, mergedRefs)
+	image := strings.TrimSpace(existingImage)
+	if profileImageSet {
+		image = strings.TrimSpace(profileImage)
+	}
+	return writeProfileAtomic(path, name, text, image, mergedNicks, mergedPeers, mergedRefs)
 }
 
-func writeProfileAtomic(path string, displayName string, profileText string, nicknames map[string]string, peerProfiles map[string]string, refreshed map[string]int64) error {
+func writeProfileAtomic(path string, displayName string, profileText string, profileImage string, nicknames map[string]string, peerProfiles map[string]string, refreshed map[string]int64) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
@@ -2392,7 +2509,12 @@ func writeProfileAtomic(path string, displayName string, profileText string, nic
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	f := profileFile{DisplayName: strings.TrimSpace(displayName), ProfileText: strings.TrimSpace(profileText), PeerNicknames: make([]savedNickname, 0, len(ids))}
+	f := profileFile{
+		DisplayName:   strings.TrimSpace(displayName),
+		ProfileText:   strings.TrimSpace(profileText),
+		ProfileImage:  strings.TrimSpace(profileImage),
+		PeerNicknames: make([]savedNickname, 0, len(ids)),
+	}
 	for _, id := range ids {
 		nick := strings.TrimSpace(nicknames[id])
 		if nick == "" || !looksLikeLoginID(id) {
@@ -2418,6 +2540,24 @@ func writeProfileAtomic(path string, displayName string, profileText string, nic
 		return err
 	}
 	return writeFileAtomic(path, payload, 0o600)
+}
+
+func sanitizeProfileImageDataURL(dataURL string) (string, error) {
+	dataURL = strings.TrimSpace(dataURL)
+	if dataURL == "" {
+		return "", nil
+	}
+	if !strings.HasPrefix(strings.ToLower(dataURL), "data:image/") {
+		return "", fmt.Errorf("profile_image must be an image data URL")
+	}
+	if len(dataURL) > 1024*1024 {
+		return "", fmt.Errorf("profile_image too large")
+	}
+	return dataURL, nil
+}
+
+func sanitizeGroupIconDataURL(dataURL string) (string, error) {
+	return sanitizeProfileImageDataURL(dataURL)
 }
 
 func defaultDisplayName() string {
@@ -2990,7 +3130,7 @@ func listIdentityCandidates(home string, currentPath string) []identityCandidate
 		}
 		pub := priv.Public().(ed25519.PublicKey)
 		loginID := loginIDForPubKey(pub)
-		name, _, _, _, _, _ := loadProfile(profilePathForKey(home, p))
+		name, _, _, _, _, _, _ := loadProfile(profilePathForKey(home, p))
 		out = append(out, identityCandidate{Path: p, LoginID: loginID, UserID: userIDForLoginID(loginID), Name: strings.TrimSpace(name)})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -3123,20 +3263,20 @@ func newWebClientForIdentity(serverAddr string, home string, keyPath string, con
 		_ = conn.Close()
 		return nil, fmt.Errorf("contacts load failed: %w", err)
 	}
-	displayName, profileText, nicknames, peerProfiles, profileRefreshed, err := loadProfile(profilePath)
+	displayName, profileText, profileImage, nicknames, peerProfiles, profileRefreshed, err := loadProfile(profilePath)
 	if err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("profile load failed: %w", err)
 	}
 	uiStatePath := uiStatePathForProfile(profilePath)
-	savedGroups, savedCtx, err := loadUIState(uiStatePath)
+	savedGroups, savedCtx, savedGroupIcons, err := loadUIState(uiStatePath)
 	if err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("ui state load failed: %w", err)
 	}
 	if strings.TrimSpace(displayName) == "" {
 		displayName = defaultDisplayName()
-		if err := saveProfile(profilePath, displayName, profileText, nicknames, peerProfiles, profileRefreshed); err != nil {
+		if err := saveProfile(profilePath, displayName, profileText, profileImage, false, nicknames, peerProfiles, profileRefreshed); err != nil {
 			_ = conn.Close()
 			return nil, fmt.Errorf("profile save failed: %w", err)
 		}
@@ -3152,6 +3292,7 @@ func newWebClientForIdentity(serverAddr string, home string, keyPath string, con
 		loginID:          loginID,
 		displayName:      displayName,
 		profileText:      profileText,
+		profileImage:     profileImage,
 		contactsPath:     contactsPath,
 		profilePath:      profilePath,
 		uiStatePath:      uiStatePath,
@@ -3171,6 +3312,7 @@ func newWebClientForIdentity(serverAddr string, home string, keyPath string, con
 		groups:           make(map[string]map[string]struct{}),
 		ownedGroups:      make(map[string]struct{}),
 		groupOwners:      make(map[string]string),
+		groupIcons:       make(map[string]string),
 		lastContext:      savedCtx,
 		pendingPings:     make(map[string]int64),
 		seenChatIDs:      make(map[string]struct{}),
@@ -3204,6 +3346,12 @@ func newWebClientForIdentity(serverAddr string, home string, keyPath string, con
 		if looksLikeLoginID(strings.TrimSpace(g.OwnerID)) {
 			client.groupOwners[group] = strings.TrimSpace(g.OwnerID)
 		}
+	}
+	for group, icon := range savedGroupIcons {
+		if strings.TrimSpace(group) == "" {
+			continue
+		}
+		client.groupIcons[group] = strings.TrimSpace(icon)
 	}
 
 	client.addEvent("info", "connected to node "+serverAddr)
@@ -3245,6 +3393,12 @@ func main() {
 	profilePath := flag.String("profile", "", "profile file path")
 	autoOpen := flag.Bool("open", true, "auto-open browser")
 	flag.Parse()
+	keyPathExplicit := false
+	flag.Visit(func(f *flag.Flag) {
+		if f != nil && f.Name == "key" {
+			keyPathExplicit = true
+		}
+	})
 
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -3259,12 +3413,36 @@ func main() {
 	var appMu sync.RWMutex
 	var client *webClient
 	activeKeyPath := strings.TrimSpace(*keyPath)
+	if !keyPathExplicit {
+		if last := loadLastUsedIdentity(home); last != "" {
+			activeKeyPath = last
+		}
+	}
 
 	resolveProfilePath := func(kp string) string {
 		if strings.TrimSpace(*profilePath) != "" {
 			return strings.TrimSpace(*profilePath)
 		}
 		return filepath.Join(home, ".goaccord", "profiles", "profile-"+filepath.Base(strings.TrimSpace(kp))+".json")
+	}
+	tryAutoConnect := func(chosen string) error {
+		chosen = strings.TrimSpace(chosen)
+		if chosen == "" {
+			return fmt.Errorf("empty key path")
+		}
+		if _, err := os.Stat(resolveProfilePath(chosen)); err != nil {
+			return fmt.Errorf("profile not found")
+		}
+		c, err := newWebClientForIdentity(*serverAddr, home, chosen, *contactsPath, resolveProfilePath(chosen))
+		if err != nil {
+			return err
+		}
+		appMu.Lock()
+		client = c
+		activeKeyPath = chosen
+		appMu.Unlock()
+		saveLastUsedIdentity(home, chosen)
+		return nil
 	}
 	withClient := func(fn func(*webClient, http.ResponseWriter, *http.Request)) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
@@ -3475,6 +3653,7 @@ func main() {
 		client = connectedClient
 		activeKeyPath = chosen
 		appMu.Unlock()
+		saveLastUsedIdentity(home, chosen)
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path": chosen, "login_id": connectedClient.loginID, "user_id": userIDForLoginID(connectedClient.loginID)})
 	})
 	mux.HandleFunc("/api/setup/disconnect", func(w http.ResponseWriter, _ *http.Request) {
@@ -3500,6 +3679,7 @@ func main() {
 	mux.HandleFunc("/api/group/invite", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleGroupInvite(w, r) }))
 	mux.HandleFunc("/api/group/public_code", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleGroupPublicCode(w, r) }))
 	mux.HandleFunc("/api/group/join_code", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleGroupJoinCode(w, r) }))
+	mux.HandleFunc("/api/group/icon/set", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleGroupIconSet(w, r) }))
 	mux.HandleFunc("/api/context/set", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleContextSet(w, r) }))
 	mux.HandleFunc("/api/ping", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handlePing(w, r) }))
 	mux.HandleFunc("/api/friend/add", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleFriendAdd(w, r) }))
@@ -3514,6 +3694,10 @@ func main() {
 	mux.HandleFunc("/api/presence/check", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handlePresenceCheck(w, r) }))
 	mux.HandleFunc("/api/presence/set", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handlePresenceSet(w, r) }))
 	mux.HandleFunc("/api/profile/card", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleProfileCard(w, r) }))
+
+	if err := tryAutoConnect(activeKeyPath); err != nil {
+		log.Printf("auto-connect skipped: %v", err)
+	}
 
 	ln, err := net.Listen("tcp", *webAddr)
 	if err != nil {

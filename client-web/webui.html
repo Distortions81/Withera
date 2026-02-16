@@ -7,16 +7,55 @@
   <style>
     [hidden] { display:none !important; }
     :root { --bg:#0d1217; --panel:#151d25; --text:#e6edf3; --muted:#8e9aa7; --accent:#55b2ff; --line:#263341; }
-    body { margin:0; font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; background:var(--bg); color:var(--text); }
-    .wrap { width:100vw; height:100vh; margin:0; padding:10px; box-sizing:border-box; display:grid; grid-template-columns: minmax(280px, 320px) 1fr; gap:10px; }
+    body { margin:0; font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:15px; background:var(--bg); color:var(--text); }
+    .wrap { width:100vw; height:100vh; margin:0; padding:10px; box-sizing:border-box; display:grid; grid-template-columns: minmax(320px, 380px) 1fr; gap:10px; }
     .mode-dm #friendList { border-color:#78c8ff; box-shadow:0 0 0 1px rgba(120,200,255,.22) inset; }
-    .mode-group #groupList, .mode-group #channelList { border-color:#65d59c; box-shadow:0 0 0 1px rgba(101,213,156,.2) inset; }
+    .mode-group #channelList { border-color:#65d59c; box-shadow:0 0 0 1px rgba(101,213,156,.2) inset; }
     .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px; display:flex; flex-direction:column; min-height:0; }
-    .left-panel { position:relative; padding-bottom:56px; }
+    .left-panel { position:relative; padding-bottom:78px; }
+    .left-nav-layout { display:grid; grid-template-columns:60px 1fr; gap:10px; min-height:0; flex:1; }
+    .nav-rail { display:flex; flex-direction:column; gap:8px; min-height:0; }
+    .nav-rail-top { display:flex; flex-direction:column; gap:8px; min-height:0; overflow:hidden; }
+    .nav-rail-bottom { margin-top:auto; }
+    .rail-item { display:flex; flex-direction:column; align-items:center; gap:3px; }
+    .rail-sep {
+      width:38px;
+      height:1px;
+      margin:2px auto 0;
+      background:#2b3a48;
+      opacity:.9;
+    }
+    .rail-label {
+      width:56px; text-align:center; font-size:10px; color:var(--muted);
+      overflow:hidden; white-space:nowrap; text-overflow:ellipsis;
+    }
+    .context-pane { display:flex; flex-direction:column; min-height:0; }
+    .rail-btn {
+      width:52px; height:52px; margin:0; padding:0;
+      border-radius:12px; border:1px solid #2d3c4b;
+      background:#0f1620; color:#9fb0be; cursor:pointer;
+      display:flex; align-items:center; justify-content:center;
+      font-weight:700; position:relative;
+    }
+    .rail-btn svg { width:21px; height:21px; fill:currentColor; }
+    .rail-btn.sel-rail {
+      color:#e6edf3;
+      box-shadow:inset 0 0 0 1px rgba(255,255,255,.14);
+      background:linear-gradient(180deg, #223444, #16232f);
+      border-color:#5a738a;
+    }
+    .mode-group #dmModeBtn { opacity:.7; }
     .right-col { display:grid; grid-template-rows: minmax(140px, 34%) 1fr; gap:12px; min-height:0; }
+    .right-col.info-collapsed { grid-template-rows: 48px 1fr; }
+    .right-col.info-collapsed #info { display:none; }
+    .info-preview {
+      flex:1; min-width:0; margin:0 8px; font-size:11px; color:var(--muted);
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    }
+    .right-col:not(.info-collapsed) .info-preview { display:none; }
     .friend-list { flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; border:1px solid var(--line); border-radius:8px; padding:6px; }
-    .group-list { max-height:20vh; overflow:auto; border:1px solid var(--line); border-radius:8px; padding:6px; }
-    .channel-list { max-height:16vh; overflow:auto; border:1px solid var(--line); border-radius:8px; padding:6px; margin-top:6px; }
+    .group-list { display:flex; flex-direction:column; gap:8px; overflow:auto; min-height:0; padding:0; }
+    .channel-list { flex:1; min-height:0; overflow:auto; border:1px solid var(--line); border-radius:8px; padding:6px; }
     .group-row { display:flex; align-items:center; gap:8px; justify-content:space-between; padding:6px 4px; border-bottom:1px solid #223040; cursor:pointer; }
     .group-name { min-width:0; overflow-wrap:anywhere; word-break:break-word; font-weight:700; flex:1; }
     .row-icon-btn {
@@ -24,8 +63,12 @@
       border:1px solid #2d3c4b; background:#0f1620; color:#8e9aa7; cursor:pointer;
       line-height:1; font-weight:700;
     }
+    .row-icon-btn svg { width:14px; height:14px; fill:currentColor; vertical-align:middle; }
     .header-row { display:flex; align-items:center; justify-content:space-between; gap:8px; }
     .header-row h3 { margin:0; }
+    .context-header { justify-content:flex-start; }
+    .context-header .friend-controls { margin-left:6px; }
+    .context-header .push-right { margin-left:auto; }
     .invite-editor {
       position:fixed; right:14px; bottom:14px; width:320px; z-index:1200;
       box-shadow:0 10px 28px rgba(0,0,0,.45);
@@ -47,24 +90,56 @@
       background:linear-gradient(90deg, rgba(191,149,67,.34), rgba(20,31,43,.82));
       box-shadow:inset 3px 0 0 #f0c46f, 0 0 0 1px rgba(240,196,111,.24);
     }
-    h3 { margin:0 0 8px; font-size:12px; color:var(--muted); letter-spacing:.04em; text-transform:uppercase; }
+    h3 { margin:0 0 8px; font-size:13px; color:var(--muted); letter-spacing:.04em; text-transform:uppercase; }
     pre { margin:0; white-space:pre-wrap; word-wrap:break-word; overflow-wrap:anywhere; flex:1; min-height:0; overflow:auto; }
     input, textarea, button, select { width:100%; box-sizing:border-box; margin:4px 0; padding:7px 8px; border-radius:8px; border:1px solid #2d3c4b; background:#10171f; color:var(--text); }
     button { background: var(--accent); color:#001018; font-weight:700; cursor:pointer; border-color:transparent; }
     .row { display:flex; gap:8px; }
     .row > * { flex:1; }
     .composer-row { display:flex; gap:8px; align-items:stretch; }
-    .composer-row textarea { flex:1; margin:0; min-height:42px; }
+    .composer-row textarea { flex:1; margin:0; min-height:42px; max-height:180px; resize:none; overflow-y:auto; }
     .composer-send { width:auto; min-width:104px; margin:0; white-space:nowrap; }
-    .small { font-size:12px; color:var(--muted); }
+    .small { font-size:13px; color:var(--muted); }
     .linkish { cursor:pointer; color:#8ecbff; text-decoration:underline; text-decoration-color:transparent; transition:text-decoration-color .15s; }
     .linkish:hover { text-decoration-color:#8ecbff; }
     #session { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-all; }
     #chatLog { flex:1; min-height:0; overflow:auto; border:1px solid var(--line); border-radius:8px; padding:6px; }
+    .chat-panel.chat-disabled { opacity:.5; }
+    .chat-panel.chat-disabled #chatLog,
+    .chat-panel.chat-disabled .composer-row { pointer-events:none; }
     .chat-row { padding: 2px 0; display:flex; gap:8px; align-items:baseline; }
-    .chat-ts { color:var(--muted); font-size:12px; min-width:56px; }
+    .chat-ts { color:var(--muted); font-size:13px; min-width:56px; }
+    .chat-avatar {
+      width:18px; height:18px; border-radius:50%;
+      border:1px solid #33404d; background:#111820;
+      display:inline-flex; align-items:center; justify-content:center; overflow:hidden;
+      flex:0 0 auto;
+      margin-right:2px;
+    }
+    .chat-avatar img { width:100%; height:100%; object-fit:cover; display:block; }
+    .chat-avatar svg { width:11px; height:11px; fill:#8ecbff; }
     .chat-name { color:#8ecbff; cursor:pointer; font-weight:700; white-space:nowrap; }
     .chat-text { white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; }
+    .chat-header { margin-bottom:8px; }
+    .chat-settings-editor {
+      position:fixed; width:280px; max-width:calc(100vw - 24px); z-index:2300;
+      box-shadow:0 14px 30px rgba(0,0,0,.48);
+      border-color:#35516b;
+      background:linear-gradient(180deg, #18232e, #131b23);
+      border-radius:12px;
+      padding:12px;
+    }
+    .chat-setting-row {
+      display:flex; align-items:center; justify-content:space-between; gap:10px;
+      padding:6px 0;
+      color:var(--text);
+      font-size:13px;
+    }
+    .chat-setting-row input[type="checkbox"] {
+      width:auto; margin:0;
+      accent-color:#55b2ff;
+      transform:scale(1.05);
+    }
     .profile-card { position:fixed; right:14px; top:14px; width:320px; z-index:1000; box-shadow:0 10px 28px rgba(0,0,0,.45); }
     .profile-card .small { margin-bottom:6px; }
     .muted { color:var(--muted); }
@@ -91,6 +166,7 @@
       width:18px; height:18px; border-radius:50%;
       background:#d92b45; color:#fff; font-size:11px; font-weight:700; line-height:1;
     }
+    .rail-badge { position:absolute; top:-4px; right:-4px; width:16px; height:16px; font-size:10px; }
     .pending-head { margin-top:8px; padding-top:8px; border-top:1px solid #223040; font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
     .pending-row { padding:6px 4px; border-bottom:1px solid #223040; }
     .pending-actions { display:flex; gap:6px; margin-top:4px; }
@@ -115,6 +191,18 @@
       transition:opacity .12s ease;
     }
     .friends-user { color:var(--muted); font-size:11px; font-weight:400; text-transform:none; letter-spacing:0; margin-left:4px; }
+    .self-identity { display:inline-flex; align-items:center; gap:6px; min-width:0; }
+    .self-identity.clickable { cursor:pointer; }
+    .self-avatar {
+      width:22px; height:22px; border-radius:50%;
+      border:1px solid #33404d; background:#111820;
+      display:inline-flex; align-items:center; justify-content:center; overflow:hidden;
+      flex:0 0 auto;
+    }
+    .self-avatar img { width:100%; height:100%; object-fit:cover; display:block; }
+    .self-avatar svg { width:14px; height:14px; fill:#8ecbff; }
+    .user-footer-main { display:inline-flex; align-items:center; gap:8px; min-width:0; }
+    .user-footer-main.clickable { cursor:pointer; }
     .profile-fab-wrap:hover .profile-fab-tip { opacity:1; }
     .profile-editor { position:absolute; left:10px; bottom:52px; width:286px; z-index:5; box-shadow:0 10px 28px rgba(0,0,0,.5); }
     .presence-fab {
@@ -135,9 +223,62 @@
       font-weight:700; line-height:1; z-index:4;
     }
     .friend-editor {
-      position:absolute; right:10px; bottom:52px; width:286px; z-index:5;
-      box-shadow:0 10px 28px rgba(0,0,0,.5);
+      position:fixed; width:320px; max-width:calc(100vw - 24px); z-index:2300;
+      box-shadow:0 14px 30px rgba(0,0,0,.48);
+      border-color:#35516b;
+      background:linear-gradient(180deg, #18232e, #131b23);
+      border-radius:12px;
+      padding:12px;
     }
+    .group-icon-editor {
+      position:fixed; width:320px; max-width:calc(100vw - 24px); z-index:2300;
+      box-shadow:0 14px 30px rgba(0,0,0,.48);
+      border-color:#4f5f3c;
+      background:linear-gradient(180deg, #222b1c, #191f14);
+      border-radius:12px;
+      padding:12px;
+    }
+    .group-create-editor {
+      position:fixed; width:340px; max-width:calc(100vw - 24px); z-index:2300;
+      box-shadow:0 14px 30px rgba(0,0,0,.48);
+      border-color:#35516b;
+      background:linear-gradient(180deg, #1a2733, #131b23);
+      border-radius:12px;
+      padding:12px;
+    }
+    .friend-inline-row { display:flex; gap:8px; align-items:center; }
+    .friend-inline-row input { flex:1; margin:0; }
+    .friend-inline-row button { width:auto; min-width:70px; margin:0; padding:7px 10px; }
+    .popup-close {
+      width:24px; height:24px; min-width:24px; margin:0; padding:0;
+      border-radius:999px; font-size:14px; line-height:1;
+      color:#9fb0be; border:1px solid #38506a; background:#101821;
+      display:inline-flex; align-items:center; justify-content:center;
+      flex:0 0 auto !important;
+    }
+    .popup-close:hover { color:#e6edf3; border-color:#597795; }
+    .user-footer {
+      position:absolute; left:10px; right:10px; bottom:10px;
+      display:flex; align-items:center; justify-content:space-between; gap:8px;
+      border:1px solid #2d3c4b; background:#10171f; border-radius:10px; padding:7px 8px;
+      z-index:6;
+    }
+    .user-footer-name {
+      min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+      color:var(--text); font-size:12px; font-weight:700;
+    }
+    .user-footer-actions { display:inline-flex; align-items:center; gap:6px; }
+    .footer-copy-wrap { position:relative; display:inline-flex; align-items:center; }
+    .footer-copy-bubble {
+      position:absolute; right:0; bottom:calc(100% + 6px);
+      background:#111820; border:1px solid #33404d; border-radius:6px;
+      padding:4px 8px; color:var(--text); font-size:11px; white-space:nowrap;
+      opacity:0; pointer-events:none; transition:opacity .14s ease;
+      z-index:20;
+    }
+    .footer-copy-bubble.show { opacity:1; }
+    .footer-icon-btn { padding:4px 6px; display:inline-flex; align-items:center; justify-content:center; }
+    .footer-icon-btn svg { width:14px; height:14px; fill:currentColor; }
     .overlay {
       position:fixed; inset:0; background:rgba(5,10,14,.72); z-index:2500;
       display:flex; align-items:center; justify-content:center; padding:16px;
@@ -167,87 +308,164 @@
 <body>
 <div id="mainWrap" class="wrap">
   <div class="panel left-panel">
-    <div class="header-row" style="margin-top:12px; margin-bottom:8px;">
-      <h3 style="margin:0">Friends: <span id="friendsUserName" class="friends-user"></span></h3>
-      <button id="logoutBtn" class="row-icon-btn" title="Logout and switch identity">Logout</button>
-    </div>
-    <div class="small" style="margin:-2px 0 10px 0;">
-      Your user ID:
-      <span id="myUserIDText" style="word-break:break-all;"></span>
-      <span id="myUserIDCopy"></span>
-    </div>
-    <div id="friendList" class="small friend-list"></div>
-    <div class="header-row" style="margin-top:10px;">
-      <h3>Nodes</h3>
-      <div class="friend-controls">
-        <button id="groupJoinCodeBtn" class="row-icon-btn" title="Join via public invite code" style="color:#8ecbff;">code+</button>
-        <button id="groupInviteCodeBtn" class="row-icon-btn" title="Create public invite code for selected node" style="color:#8ecbff;">code</button>
-        <button id="serverCreateBtn" class="row-icon-btn" title="Create node/group" style="color:#8ecbff;">+</button>
+    <div class="left-nav-layout">
+      <div class="nav-rail">
+        <div class="nav-rail-top">
+          <div class="rail-item">
+            <button id="dmModeBtn" class="rail-btn sel-rail" type="button" title="Friends">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a5 5 0 1 0-5-5 5 5 0 0 0 5 5zm0 2c-4.4 0-8 2-8 4.5V21h16v-2.5C20 16 16.4 14 12 14z"/></svg>
+            </button>
+            <div class="rail-label">Friends</div>
+          </div>
+          <div class="rail-sep"></div>
+          <div class="rail-label" style="width:100%;">Groups</div>
+          <div id="groupList" class="small group-list"></div>
+        </div>
+        <div class="rail-item nav-rail-bottom">
+          <button id="groupCreateRailBtn" class="rail-btn" type="button" title="Create group">+</button>
+          <div class="rail-label">New Group</div>
+        </div>
+      </div>
+      <div class="context-pane">
+        <div class="header-row context-header" style="margin:0 0 6px 0;">
+          <h3 id="contextListLabel" style="margin:0;">Friends</h3>
+          <span id="contextOwnerLabel" class="friends-user" hidden></span>
+          <div class="friend-controls">
+            <button id="friendActionBtn" class="row-icon-btn" title="Add friend" style="color:#8ecbff;" aria-label="Add friend">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 12a4.5 4.5 0 1 0-4.5-4.5A4.5 4.5 0 0 0 10 12zm0 2c-3.7 0-6.8 1.7-6.8 3.9V20h9.7a6.5 6.5 0 0 1-.4-2.1 6.9 6.9 0 0 1 2.2-5.1A11 11 0 0 0 10 14zm8 1h-2v2h-2v2h2v2h2v-2h2v-2h-2z"/></svg>
+            </button>
+            <button id="groupIconBtn" class="row-icon-btn" title="Group icon" style="color:#d3e39b;" aria-label="Group icon" hidden>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.4 13a7.8 7.8 0 0 0 .1-1l2-1.6-2-3.4-2.4 1a7.9 7.9 0 0 0-1.7-1l-.3-2.6h-4l-.3 2.6a7.9 7.9 0 0 0-1.7 1l-2.4-1-2 3.4L4.5 12a7.8 7.8 0 0 0 .1 1l-2 1.6 2 3.4 2.4-1a7.9 7.9 0 0 0 1.7 1l.3 2.6h4l.3-2.6a7.9 7.9 0 0 0 1.7-1l2.4 1 2-3.4-2-1.6zM12 15.2a3.2 3.2 0 1 1 0-6.4 3.2 3.2 0 0 1 0 6.4z"/></svg>
+            </button>
+          </div>
+          <button id="groupShareBtn" class="row-icon-btn push-right" title="Invite / share" style="color:#8ecbff;" aria-label="Invite / share" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 16.1c-.8 0-1.5.3-2 .8L8.9 12.7c.1-.2.1-.5.1-.7s0-.5-.1-.7L16 7.1c.6.5 1.2.8 2 .8 1.9 0 3.5-1.6 3.5-3.5S19.9 1 18 1s-3.5 1.6-3.5 3.5c0 .2 0 .5.1.7L7.5 9.4c-.6-.5-1.2-.8-2-.8C3.6 8.6 2 10.1 2 12s1.6 3.5 3.5 3.5c.8 0 1.5-.3 2-.8l7.1 4.2c-.1.2-.1.5-.1.7 0 1.9 1.6 3.5 3.5 3.5s3.5-1.6 3.5-3.5-1.6-3.5-3.5-3.5z"/></svg>
+          </button>
+        </div>
+        <div id="friendList" class="small friend-list"></div>
+        <div id="channelList" class="small channel-list" hidden></div>
       </div>
     </div>
-    <div id="groupList" class="small group-list"></div>
-    <div class="header-row" style="margin-top:8px;">
-      <h3>Channels</h3>
-      <button id="channelCreateBtn" class="row-icon-btn" title="Create channel" style="color:#8ecbff;" hidden>+</button>
-    </div>
-    <div id="channelList" class="small channel-list"></div>
 
     <div id="profileEditor" class="panel profile-editor" hidden>
       <div class="row" style="align-items:center;">
         <h3 style="margin:0; flex:1;">Edit Profile</h3>
         <div id="profileIDCopy"></div>
-        <button id="profileEditorClose" style="width:auto; padding:4px 8px;" title="Close">X</button>
+        <button id="profileEditorClose" class="popup-close" title="Close" aria-label="Close">×</button>
       </div>
       <input id="displayName" placeholder="display name">
+      <input id="profileImageInput" type="file" accept="image/*">
+      <div class="row" style="align-items:center;">
+        <div class="self-avatar" style="width:34px;height:34px;">
+          <img id="profileImagePreview" hidden>
+          <svg id="profileImagePreviewIcon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a5 5 0 1 0-5-5 5 5 0 0 0 5 5zm0 2c-4.4 0-8 2-8 4.5V21h16v-2.5C20 16 16.4 14 12 14z"/></svg>
+        </div>
+        <button id="profileImageClear" type="button">Clear Image</button>
+      </div>
       <textarea id="profileText" rows="3" placeholder="profile text"></textarea>
       <button id="saveProfile">Save Profile</button>
     </div>
     <div id="presenceEditor" class="panel presence-editor" hidden>
       <div class="row" style="align-items:center;">
         <h3 style="margin:0; flex:1;">Presence</h3>
-        <button id="presenceEditorClose" style="width:auto; padding:4px 8px;" title="Close">X</button>
+        <button id="presenceEditorClose" class="popup-close" title="Close" aria-label="Close">×</button>
       </div>
       <div class="row">
         <select id="presenceMode">
           <option value="visible">visible</option>
           <option value="invisible">invisible</option>
         </select>
-        <input id="presenceTTL" type="number" min="180" max="900" step="30" placeholder="ttl sec">
       </div>
       <button id="presenceSave">Update Presence</button>
     </div>
-    <div class="profile-fab-wrap">
-      <div class="profile-fab-stack">
-        <button id="profileFab" class="profile-fab" type="button" aria-label="profile">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a5 5 0 1 0-5-5 5 5 0 0 0 5 5zm0 2c-4.4 0-8 2-8 4.5V21h16v-2.5C20 16 16.4 14 12 14z"/></svg>
-        </button>
-      </div>
-      <span class="profile-fab-tip">profile</span>
-    </div>
-    <button id="presenceFab" class="presence-fab" type="button" aria-label="presence" title="Presence settings">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.4 13a7.8 7.8 0 0 0 .1-1l2-1.6-2-3.4-2.4 1a7.9 7.9 0 0 0-1.7-1l-.3-2.6h-4l-.3 2.6a7.9 7.9 0 0 0-1.7 1l-2.4-1-2 3.4L4.5 12a7.8 7.8 0 0 0 .1 1l-2 1.6 2 3.4 2.4-1a7.9 7.9 0 0 0 1.7 1l.3 2.6h4l.3-2.6a7.9 7.9 0 0 0 1.7-1l2.4 1 2-3.4-2-1.6zM12 15.2a3.2 3.2 0 1 1 0-6.4 3.2 3.2 0 0 1 0 6.4z"/></svg>
-    </button>
-
-    <button id="friendFab" class="friend-fab" type="button" aria-label="friends" title="Friend actions">+</button>
     <div id="friendEditor" class="panel friend-editor" hidden>
       <div class="row" style="align-items:center;">
-        <h3 style="margin:0; flex:1;">Friend Actions</h3>
-        <button id="friendEditorClose" style="width:auto; padding:4px 8px;" title="Close">X</button>
+        <h3 style="margin:0; flex:1;">Add Friend</h3>
+        <button id="friendEditorClose" class="popup-close" title="Close" aria-label="Close">×</button>
       </div>
-      <input id="friendInput" placeholder="friend user_id (or known alias/nickname)">
-      <div class="row">
-        <button id="friendAdd">Friend Add</button>
+      <div class="small" style="margin-bottom:8px;">Enter user ID, alias, or nickname</div>
+      <div class="friend-inline-row">
+        <input id="friendInput" placeholder="user id / alias / nickname">
+        <button id="friendAdd">Add</button>
+      </div>
+    </div>
+    <div id="groupIconEditor" class="panel group-icon-editor" hidden>
+      <div class="row" style="align-items:center;">
+        <h3 style="margin:0; flex:1;">Group Icon</h3>
+        <button id="groupIconEditorClose" class="popup-close" title="Close" aria-label="Close">×</button>
+      </div>
+      <div class="small" style="margin-bottom:8px;">Set icon for this group</div>
+      <input id="groupIconInput" type="file" accept="image/*">
+      <div class="row" style="align-items:center;">
+        <div class="self-avatar" style="width:34px;height:34px;">
+          <img id="groupIconPreview" hidden>
+          <svg id="groupIconPreviewIcon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a5 5 0 1 0-5-5 5 5 0 0 0 5 5zm0 2c-4.4 0-8 2-8 4.5V21h16v-2.5C20 16 16.4 14 12 14z"/></svg>
+        </div>
+        <button id="groupIconClear" type="button">Clear</button>
+      </div>
+      <button id="groupIconSave">Save</button>
+    </div>
+    <div id="groupCreateEditor" class="panel group-create-editor" hidden>
+      <div class="row" style="align-items:center;">
+        <h3 style="margin:0; flex:1;">New Group</h3>
+        <button id="groupCreateEditorClose" class="popup-close" title="Close" aria-label="Close">×</button>
+      </div>
+      <div class="small" style="margin-bottom:8px;">Name your group and choose an icon (optional)</div>
+      <input id="groupCreateName" placeholder="group name">
+      <input id="groupCreateIconInput" type="file" accept="image/*">
+      <div class="row" style="align-items:center;">
+        <div class="self-avatar" style="width:34px;height:34px;">
+          <img id="groupCreateIconPreview" hidden>
+          <svg id="groupCreateIconPreviewIcon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a5 5 0 1 0-5-5 5 5 0 0 0 5 5zm0 2c-4.4 0-8 2-8 4.5V21h16v-2.5C20 16 16.4 14 12 14z"/></svg>
+        </div>
+        <button id="groupCreateIconClear" type="button">Clear</button>
+      </div>
+      <div class="friend-inline-row">
+        <div style="flex:1;"></div>
+        <button id="groupCreateSubmit" type="button">Create</button>
+      </div>
+    </div>
+    <div class="user-footer">
+      <div id="footerIdentity" class="user-footer-main clickable">
+        <span class="self-avatar">
+          <img id="footerAvatarImg" hidden>
+          <svg id="footerAvatarIcon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a5 5 0 1 0-5-5 5 5 0 0 0 5 5zm0 2c-4.4 0-8 2-8 4.5V21h16v-2.5C20 16 16.4 14 12 14z"/></svg>
+        </span>
+        <div id="footerNickname" class="user-footer-name">(no nickname)</div>
+      </div>
+      <div class="user-footer-actions">
+        <span class="footer-copy-wrap">
+          <button id="footerUserIDBtn" class="row-icon-btn footer-icon-btn" type="button" title="Copy your user ID" aria-label="Share ID">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 16.1c-.8 0-1.5.3-2 .8L8.9 12.7c.1-.2.1-.5.1-.7s0-.5-.1-.7L16 7.1c.6.5 1.2.8 2 .8 1.9 0 3.5-1.6 3.5-3.5S19.9 1 18 1s-3.5 1.6-3.5 3.5c0 .2 0 .5.1.7L7.5 9.4c-.6-.5-1.2-.8-2-.8C3.6 8.6 2 10.1 2 12s1.6 3.5 3.5 3.5c.8 0 1.5-.3 2-.8l7.1 4.2c-.1.2-.1.5-.1.7 0 1.9 1.6 3.5 3.5 3.5s3.5-1.6 3.5-3.5-1.6-3.5-3.5-3.5z"/></svg>
+          </button>
+          <span id="footerUserIDBubble" class="footer-copy-bubble">copied your user id! share with friends!</span>
+        </span>
+        <button id="footerSettingsBtn" class="row-icon-btn footer-icon-btn" type="button" title="Settings">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.4 13a7.8 7.8 0 0 0 .1-1l2-1.6-2-3.4-2.4 1a7.9 7.9 0 0 0-1.7-1l-.3-2.6h-4l-.3 2.6a7.9 7.9 0 0 0-1.7 1l-2.4-1-2 3.4L4.5 12a7.8 7.8 0 0 0 .1 1l-2 1.6 2 3.4 2.4-1a7.9 7.9 0 0 0 1.7 1l.3 2.6h4l.3-2.6a7.9 7.9 0 0 0 1.7-1l2.4 1 2-3.4-2-1.6zM12 15.2a3.2 3.2 0 1 1 0-6.4 3.2 3.2 0 0 1 0 6.4z"/></svg>
+        </button>
+        <button id="footerLogoutBtn" class="row-icon-btn footer-icon-btn" type="button" title="Logout and switch identity">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 17l1.4 1.4L17.8 12l-6.4-6.4L10 7l4 4H3v2h11l-4 4zm8-14H8a2 2 0 0 0-2 2v3h2V5h10v14H8v-3H6v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z"/></svg>
+        </button>
       </div>
     </div>
   </div>
 
   <div class="right-col">
-    <div class="panel">
-      <h3>Info</h3>
+    <div id="infoPanel" class="panel">
+      <div class="header-row" style="margin-bottom:8px;">
+        <h3 style="margin:0;">Info</h3>
+        <div id="infoPreview" class="info-preview"></div>
+        <button id="infoFoldBtn" class="row-icon-btn" type="button" title="Fold/unfold info">▼</button>
+      </div>
       <pre id="info"></pre>
     </div>
-    <div class="panel">
-      <h3 id="chatTitle">Chat</h3>
+    <div id="chatPanel" class="panel chat-panel">
+      <div class="header-row chat-header">
+        <h3 id="chatTitle" style="margin:0;">Chat</h3>
+        <button id="chatSettingsBtn" class="row-icon-btn" type="button" title="Chat settings" aria-label="Chat settings">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.4 13a7.8 7.8 0 0 0 .1-1l2-1.6-2-3.4-2.4 1a7.9 7.9 0 0 0-1.7-1l-.3-2.6h-4l-.3 2.6a7.9 7.9 0 0 0-1.7 1l-2.4-1-2 3.4L4.5 12a7.8 7.8 0 0 0 .1 1l-2 1.6 2 3.4 2.4-1a7.9 7.9 0 0 0 1.7 1l.3 2.6h4l.3-2.6a7.9 7.9 0 0 0 1.7-1l2.4 1 2-3.4-2-1.6zM12 15.2a3.2 3.2 0 1 1 0-6.4 3.2 3.2 0 0 1 0 6.4z"/></svg>
+        </button>
+      </div>
       <div id="chatLog"></div>
       <div class="composer-row">
         <textarea id="message" rows="2" placeholder="type message"></textarea>
@@ -260,7 +478,7 @@
 <div id="profileCard" class="panel profile-card" hidden>
   <div class="row" style="align-items:center;">
     <h3 style="margin:0; flex:1;">Profile</h3>
-    <button id="profileClose" style="width:auto; padding:4px 8px;" title="Close">X</button>
+    <button id="profileClose" class="popup-close" title="Close" aria-label="Close">×</button>
   </div>
   <div class="small muted">Nickname</div>
   <div id="cardNickname"></div>
@@ -275,16 +493,32 @@
 <div id="inviteEditor" class="panel invite-editor" hidden>
   <div class="row" style="align-items:center;">
     <h3 id="inviteTitle" style="margin:0; flex:1;">Invite</h3>
-    <button id="inviteClose" style="width:auto; padding:4px 8px;" title="Close">X</button>
+    <button id="inviteClose" class="popup-close" title="Close" aria-label="Close">×</button>
   </div>
   <div id="inviteList" class="invite-list small"></div>
   <button id="inviteSend">Send Invite</button>
+</div>
+
+<div id="chatSettingsEditor" class="panel chat-settings-editor" hidden>
+  <div class="row" style="align-items:center;">
+    <h3 style="margin:0; flex:1;">Chat Settings</h3>
+    <button id="chatSettingsClose" class="popup-close" title="Close" aria-label="Close">×</button>
+  </div>
+  <label class="chat-setting-row">
+    <span>Show profile images</span>
+    <input id="chatShowImages" type="checkbox" checked>
+  </label>
+  <label class="chat-setting-row">
+    <span>Show timestamps</span>
+    <input id="chatShowTimestamps" type="checkbox" checked>
+  </label>
 </div>
 
 <script>
 let since = 0;
 const infoEl = document.getElementById('info');
 const chatEl = document.getElementById('chatLog');
+const chatPanel = document.getElementById('chatPanel');
 const friendList = document.getElementById('friendList');
 const groupList = document.getElementById('groupList');
 const channelList = document.getElementById('channelList');
@@ -296,28 +530,66 @@ const cardProfile = document.getElementById('cardProfile');
 const cardRefreshed = document.getElementById('cardRefreshed');
 const profileEditor = document.getElementById('profileEditor');
 const friendEditor = document.getElementById('friendEditor');
+const groupIconEditor = document.getElementById('groupIconEditor');
+const groupCreateEditor = document.getElementById('groupCreateEditor');
 const presenceEditor = document.getElementById('presenceEditor');
 const inviteEditor = document.getElementById('inviteEditor');
+const chatSettingsEditor = document.getElementById('chatSettingsEditor');
 const mainWrap = document.getElementById('mainWrap');
 const inviteTitle = document.getElementById('inviteTitle');
 const inviteList = document.getElementById('inviteList');
 const profileIDCopy = document.getElementById('profileIDCopy');
-const friendsUserName = document.getElementById('friendsUserName');
-const myUserIDText = document.getElementById('myUserIDText');
-const myUserIDCopy = document.getElementById('myUserIDCopy');
+const footerNickname = document.getElementById('footerNickname');
+const footerAvatarImg = document.getElementById('footerAvatarImg');
+const footerAvatarIcon = document.getElementById('footerAvatarIcon');
+const footerIdentity = document.getElementById('footerIdentity');
+const profileImageInput = document.getElementById('profileImageInput');
+const profileImagePreview = document.getElementById('profileImagePreview');
+const profileImagePreviewIcon = document.getElementById('profileImagePreviewIcon');
+const profileImageClear = document.getElementById('profileImageClear');
 const presenceMode = document.getElementById('presenceMode');
-const presenceTTL = document.getElementById('presenceTTL');
+const dmModeBtn = document.getElementById('dmModeBtn');
+const groupCreateRailBtn = document.getElementById('groupCreateRailBtn');
+const contextListLabel = document.getElementById('contextListLabel');
+const contextOwnerLabel = document.getElementById('contextOwnerLabel');
+const friendActionBtn = document.getElementById('friendActionBtn');
+const groupIconBtn = document.getElementById('groupIconBtn');
+const groupShareBtn = document.getElementById('groupShareBtn');
+const groupIconInput = document.getElementById('groupIconInput');
+const groupIconPreview = document.getElementById('groupIconPreview');
+const groupIconPreviewIcon = document.getElementById('groupIconPreviewIcon');
+const groupIconClear = document.getElementById('groupIconClear');
+const groupIconSave = document.getElementById('groupIconSave');
+const groupCreateName = document.getElementById('groupCreateName');
+const groupCreateIconInput = document.getElementById('groupCreateIconInput');
+const groupCreateIconPreview = document.getElementById('groupCreateIconPreview');
+const groupCreateIconPreviewIcon = document.getElementById('groupCreateIconPreviewIcon');
+const groupCreateIconClear = document.getElementById('groupCreateIconClear');
+const groupCreateSubmit = document.getElementById('groupCreateSubmit');
+const footerUserIDBtn = document.getElementById('footerUserIDBtn');
+const footerUserIDBubble = document.getElementById('footerUserIDBubble');
+const footerSettingsBtn = document.getElementById('footerSettingsBtn');
+const footerLogoutBtn = document.getElementById('footerLogoutBtn');
+const infoPanel = document.getElementById('infoPanel');
+const infoFoldBtn = document.getElementById('infoFoldBtn');
+const infoPreview = document.getElementById('infoPreview');
+const messageEl = document.getElementById('message');
+const sendBtn = document.getElementById('send');
+const chatSettingsBtn = document.getElementById('chatSettingsBtn');
+const chatShowImages = document.getElementById('chatShowImages');
+const chatShowTimestamps = document.getElementById('chatShowTimestamps');
 document.getElementById('profileClose').onclick = () => { profileCard.hidden = true; };
-document.getElementById('profileFab').onclick = () => { profileEditor.hidden = !profileEditor.hidden; };
 document.getElementById('profileEditorClose').onclick = () => { profileEditor.hidden = true; };
-document.getElementById('presenceFab').onclick = () => { presenceEditor.hidden = !presenceEditor.hidden; };
 document.getElementById('presenceEditorClose').onclick = () => { presenceEditor.hidden = true; };
-document.getElementById('friendFab').onclick = () => { friendEditor.hidden = !friendEditor.hidden; };
 document.getElementById('friendEditorClose').onclick = () => { friendEditor.hidden = true; };
+document.getElementById('groupIconEditorClose').onclick = () => { groupIconEditor.hidden = true; };
+document.getElementById('groupCreateEditorClose').onclick = () => { groupCreateEditor.hidden = true; };
 document.getElementById('inviteClose').onclick = () => { inviteEditor.hidden = true; };
+document.getElementById('chatSettingsClose').onclick = () => { chatSettingsEditor.hidden = true; };
 let activeTarget = '';
 let activeGroup = '';
 let activeChannel = 'default';
+let navMode = 'dm';
 let latestGroups = [];
 let latestTargets = [];
 let latestPendingFriends = [];
@@ -327,25 +599,520 @@ let inviteGroup = '';
 let persistContextTimer = null;
 let selfLoginID = '';
 let selfUserID = '';
+let selfProfileImage = '';
+let profileImageDirty = false;
 let chatEvents = [];
 let unreadDM = {};
 let unreadGroupChannel = {};
+let footerCopyBubbleTimer = null;
+let groupIconDraft = '';
+let groupIconDirty = false;
+let groupCreateIconDraft = '';
+let chatShowProfileImages = true;
+let chatShowTime = true;
+
+function setInfoCollapsed(collapsed) {
+  document.querySelector('.right-col').classList.toggle('info-collapsed', !!collapsed);
+  infoFoldBtn.textContent = collapsed ? '▼' : '▲';
+}
+
+infoFoldBtn.onclick = () => {
+  const collapsed = document.querySelector('.right-col').classList.contains('info-collapsed');
+  setInfoCollapsed(!collapsed);
+};
+
+function resizeMessageInput() {
+  messageEl.style.height = 'auto';
+  messageEl.style.height = Math.min(messageEl.scrollHeight, 180) + 'px';
+}
+
+messageEl.addEventListener('input', resizeMessageInput);
+
+function loadChatPrefs() {
+  try {
+    const raw = localStorage.getItem('openaccord.chat.prefs');
+    if (!raw) return;
+    const p = JSON.parse(raw);
+    if (typeof p.show_images === 'boolean') chatShowProfileImages = p.show_images;
+    if (typeof p.show_timestamps === 'boolean') chatShowTime = p.show_timestamps;
+  } catch (_) {}
+}
+
+function saveChatPrefs() {
+  try {
+    localStorage.setItem('openaccord.chat.prefs', JSON.stringify({
+      show_images: !!chatShowProfileImages,
+      show_timestamps: !!chatShowTime
+    }));
+  } catch (_) {}
+}
+
+loadChatPrefs();
+chatShowImages.checked = chatShowProfileImages;
+chatShowTimestamps.checked = chatShowTime;
+
+profileImageInput.addEventListener('change', () => {
+  const file = profileImageInput.files && profileImageInput.files[0];
+  if (!file) return;
+  if (!file.type || !file.type.startsWith('image/')) {
+    appendInfo('profile image must be an image file');
+    profileImageInput.value = '';
+    return;
+  }
+  if (file.size > 768 * 1024) {
+    appendInfo('profile image too large (max 768KB)');
+    profileImageInput.value = '';
+    return;
+  }
+  const img = new Image();
+  const objectURL = URL.createObjectURL(file);
+  img.onload = () => {
+    try {
+      const size = 64;
+      const canvas = document.createElement('canvas');
+      canvas.width = size;
+      canvas.height = size;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        appendInfo('profile image processing failed');
+        return;
+      }
+      const srcW = img.naturalWidth || img.width;
+      const srcH = img.naturalHeight || img.height;
+      if (!srcW || !srcH) {
+        appendInfo('profile image read failed');
+        return;
+      }
+      // Center-crop to square then downscale to 64x64.
+      const srcSide = Math.min(srcW, srcH);
+      const sx = Math.floor((srcW - srcSide) / 2);
+      const sy = Math.floor((srcH - srcSide) / 2);
+      ctx.drawImage(img, sx, sy, srcSide, srcSide, 0, 0, size, size);
+      const dataURL = canvas.toDataURL('image/jpeg', 0.75);
+      if (!dataURL.startsWith('data:image/jpeg')) {
+        appendInfo('profile image encoding failed');
+        return;
+      }
+      selfProfileImage = dataURL;
+      profileImageDirty = true;
+      setAvatarImage(profileImagePreview, profileImagePreviewIcon, selfProfileImage);
+    } finally {
+      URL.revokeObjectURL(objectURL);
+      profileImageInput.value = '';
+    }
+  };
+  img.onerror = () => {
+    URL.revokeObjectURL(objectURL);
+    profileImageInput.value = '';
+    appendInfo('profile image read failed');
+  };
+  img.src = objectURL;
+});
+
+profileImageClear.onclick = () => {
+  selfProfileImage = '';
+  profileImageDirty = true;
+  profileImageInput.value = '';
+  setAvatarImage(profileImagePreview, profileImagePreviewIcon, '');
+};
+
+groupIconInput.addEventListener('change', () => {
+  const file = groupIconInput.files && groupIconInput.files[0];
+  if (!file) return;
+  if (!file.type || !file.type.startsWith('image/')) {
+    appendInfo('group icon must be an image file');
+    groupIconInput.value = '';
+    return;
+  }
+  const img = new Image();
+  const objectURL = URL.createObjectURL(file);
+  img.onload = () => {
+    try {
+      const size = 64;
+      const canvas = document.createElement('canvas');
+      canvas.width = size;
+      canvas.height = size;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        appendInfo('group icon processing failed');
+        return;
+      }
+      const srcW = img.naturalWidth || img.width;
+      const srcH = img.naturalHeight || img.height;
+      if (!srcW || !srcH) {
+        appendInfo('group icon read failed');
+        return;
+      }
+      const srcSide = Math.min(srcW, srcH);
+      const sx = Math.floor((srcW - srcSide) / 2);
+      const sy = Math.floor((srcH - srcSide) / 2);
+      ctx.drawImage(img, sx, sy, srcSide, srcSide, 0, 0, size, size);
+      const dataURL = canvas.toDataURL('image/jpeg', 0.75);
+      if (!dataURL.startsWith('data:image/jpeg')) {
+        appendInfo('group icon encoding failed');
+        return;
+      }
+      if (dataURL.length > 24 * 1024) {
+        appendInfo('group icon too large after encoding');
+        return;
+      }
+      groupIconDraft = dataURL;
+      groupIconDirty = true;
+      setAvatarImage(groupIconPreview, groupIconPreviewIcon, groupIconDraft);
+    } finally {
+      URL.revokeObjectURL(objectURL);
+      groupIconInput.value = '';
+    }
+  };
+  img.onerror = () => {
+    URL.revokeObjectURL(objectURL);
+    groupIconInput.value = '';
+    appendInfo('group icon read failed');
+  };
+  img.src = objectURL;
+});
+
+groupIconClear.onclick = () => {
+  groupIconDraft = '';
+  groupIconDirty = true;
+  groupIconInput.value = '';
+  setAvatarImage(groupIconPreview, groupIconPreviewIcon, '');
+};
+
+groupCreateIconInput.addEventListener('change', () => {
+  const file = groupCreateIconInput.files && groupCreateIconInput.files[0];
+  if (!file) return;
+  if (!file.type || !file.type.startsWith('image/')) {
+    appendInfo('group icon must be an image file');
+    groupCreateIconInput.value = '';
+    return;
+  }
+  const img = new Image();
+  const objectURL = URL.createObjectURL(file);
+  img.onload = () => {
+    try {
+      const size = 64;
+      const canvas = document.createElement('canvas');
+      canvas.width = size;
+      canvas.height = size;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        appendInfo('group icon processing failed');
+        return;
+      }
+      const srcW = img.naturalWidth || img.width;
+      const srcH = img.naturalHeight || img.height;
+      if (!srcW || !srcH) {
+        appendInfo('group icon read failed');
+        return;
+      }
+      const srcSide = Math.min(srcW, srcH);
+      const sx = Math.floor((srcW - srcSide) / 2);
+      const sy = Math.floor((srcH - srcSide) / 2);
+      ctx.drawImage(img, sx, sy, srcSide, srcSide, 0, 0, size, size);
+      const dataURL = canvas.toDataURL('image/jpeg', 0.75);
+      if (!dataURL.startsWith('data:image/jpeg')) {
+        appendInfo('group icon encoding failed');
+        return;
+      }
+      if (dataURL.length > 24 * 1024) {
+        appendInfo('group icon too large after encoding');
+        return;
+      }
+      groupCreateIconDraft = dataURL;
+      setAvatarImage(groupCreateIconPreview, groupCreateIconPreviewIcon, groupCreateIconDraft);
+    } finally {
+      URL.revokeObjectURL(objectURL);
+      groupCreateIconInput.value = '';
+    }
+  };
+  img.onerror = () => {
+    URL.revokeObjectURL(objectURL);
+    groupCreateIconInput.value = '';
+    appendInfo('group icon read failed');
+  };
+  img.src = objectURL;
+});
+
+groupCreateIconClear.onclick = () => {
+  groupCreateIconDraft = '';
+  groupCreateIconInput.value = '';
+  setAvatarImage(groupCreateIconPreview, groupCreateIconPreviewIcon, '');
+};
+
+dmModeBtn.onclick = () => {
+  navMode = 'dm';
+  activeGroup = '';
+  activeChannel = 'default';
+  activeTarget = '';
+  updateChatContext();
+  persistContextSoon();
+};
+friendActionBtn.onclick = () => {
+  const willShow = friendEditor.hidden;
+  friendEditor.hidden = !friendEditor.hidden;
+  if (willShow) {
+    const r = friendActionBtn.getBoundingClientRect();
+    const pad = 8;
+    const targetW = Math.min(320, window.innerWidth - 24);
+    let left = r.right - targetW;
+    if (left < 12) left = 12;
+    if (left + targetW > window.innerWidth - 12) left = window.innerWidth - targetW - 12;
+    let top = r.bottom + pad;
+    const maxTop = window.innerHeight - 170;
+    if (top > maxTop) top = Math.max(12, r.top - 130);
+    friendEditor.style.left = Math.round(left) + 'px';
+    friendEditor.style.top = Math.round(top) + 'px';
+  }
+};
+groupCreateRailBtn.onclick = () => {
+  const willShow = groupCreateEditor.hidden;
+  groupCreateEditor.hidden = !groupCreateEditor.hidden;
+  if (willShow) {
+    groupCreateName.value = '';
+    groupCreateIconDraft = '';
+    groupCreateIconInput.value = '';
+    setAvatarImage(groupCreateIconPreview, groupCreateIconPreviewIcon, '');
+    const r = groupCreateRailBtn.getBoundingClientRect();
+    const pad = 8;
+    const targetW = Math.min(340, window.innerWidth - 24);
+    let left = r.right + pad;
+    if (left + targetW > window.innerWidth - 12) left = window.innerWidth - targetW - 12;
+    if (left < 12) left = 12;
+    let top = r.bottom - 220;
+    if (top < 12) top = 12;
+    if (top > window.innerHeight - 240) top = Math.max(12, window.innerHeight - 240);
+    groupCreateEditor.style.left = Math.round(left) + 'px';
+    groupCreateEditor.style.top = Math.round(top) + 'px';
+    setTimeout(() => groupCreateName.focus(), 0);
+  }
+};
+groupIconBtn.onclick = () => {
+  if (!isGroupMode()) return;
+  const current = (latestGroups || []).find((g) => (g.name || '') === activeGroup);
+  const canEdit = !!(current && (current.owned || ((current.owner_id || '') === selfLoginID)));
+  if (!canEdit) return;
+  groupIconDraft = (current.icon || '').trim();
+  groupIconDirty = false;
+  groupIconInput.value = '';
+  setAvatarImage(groupIconPreview, groupIconPreviewIcon, groupIconDraft);
+  const willShow = groupIconEditor.hidden;
+  groupIconEditor.hidden = !groupIconEditor.hidden;
+  if (willShow) {
+    const r = groupIconBtn.getBoundingClientRect();
+    const pad = 8;
+    const targetW = Math.min(320, window.innerWidth - 24);
+    let left = r.right - targetW;
+    if (left < 12) left = 12;
+    if (left + targetW > window.innerWidth - 12) left = window.innerWidth - targetW - 12;
+    let top = r.bottom + pad;
+    const maxTop = window.innerHeight - 220;
+    if (top > maxTop) top = Math.max(12, r.top - 180);
+    groupIconEditor.style.left = Math.round(left) + 'px';
+    groupIconEditor.style.top = Math.round(top) + 'px';
+  }
+};
+groupShareBtn.onclick = () => {
+  if (!isGroupMode() || !activeGroup) return;
+  openInviteDialog(activeGroup);
+};
+chatSettingsBtn.onclick = () => {
+  const willShow = chatSettingsEditor.hidden;
+  chatSettingsEditor.hidden = !chatSettingsEditor.hidden;
+  if (willShow) {
+    chatShowImages.checked = chatShowProfileImages;
+    chatShowTimestamps.checked = chatShowTime;
+    const r = chatSettingsBtn.getBoundingClientRect();
+    const pad = 8;
+    const targetW = Math.min(280, window.innerWidth - 24);
+    let left = r.right - targetW;
+    if (left < 12) left = 12;
+    if (left + targetW > window.innerWidth - 12) left = window.innerWidth - targetW - 12;
+    let top = r.bottom + pad;
+    if (top > window.innerHeight - 150) top = Math.max(12, r.top - 120);
+    chatSettingsEditor.style.left = Math.round(left) + 'px';
+    chatSettingsEditor.style.top = Math.round(top) + 'px';
+  }
+};
+chatShowImages.onchange = () => {
+  chatShowProfileImages = !!chatShowImages.checked;
+  saveChatPrefs();
+  renderChat();
+};
+chatShowTimestamps.onchange = () => {
+  chatShowTime = !!chatShowTimestamps.checked;
+  saveChatPrefs();
+  renderChat();
+};
+footerIdentity.onclick = () => {
+  profileEditor.hidden = !profileEditor.hidden;
+};
+footerSettingsBtn.onclick = () => {
+  presenceEditor.hidden = !presenceEditor.hidden;
+};
+footerUserIDBtn.onclick = async () => {
+  const id = (selfUserID || selfLoginID || '').trim();
+  if (!id) return;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(id);
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = id;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+  } catch (_) {}
+  footerUserIDBubble.classList.add('show');
+  if (footerCopyBubbleTimer) clearTimeout(footerCopyBubbleTimer);
+  footerCopyBubbleTimer = setTimeout(() => {
+    footerUserIDBubble.classList.remove('show');
+    footerCopyBubbleTimer = null;
+  }, 1800);
+};
+
+groupIconSave.onclick = async () => {
+  if (!isGroupMode() || !activeGroup) return;
+  if (!groupIconDirty) {
+    groupIconEditor.hidden = true;
+    return;
+  }
+  try {
+    await post('/api/group/icon/set', {group: activeGroup, icon: groupIconDraft || ''});
+    groupIconDirty = false;
+    groupIconEditor.hidden = true;
+    await poll();
+  } catch (e) {
+    appendInfo(`group icon save failed: ${e.message}`);
+  }
+};
+
+function isGroupMode() {
+  return navMode === 'group' && !!activeGroup;
+}
+
+function setAvatarImage(imgEl, iconEl, dataURL) {
+  const src = (dataURL || '').trim();
+  if (src) {
+    imgEl.src = src;
+    imgEl.hidden = false;
+    iconEl.hidden = true;
+  } else {
+    imgEl.removeAttribute('src');
+    imgEl.hidden = true;
+    iconEl.hidden = false;
+  }
+}
+
+function applySelfProfile(displayName, profileImage) {
+  const name = (displayName || '').trim() || '(no nickname)';
+  const img = (profileImage || '').trim();
+  footerNickname.textContent = name;
+  selfProfileImage = img;
+  setAvatarImage(footerAvatarImg, footerAvatarIcon, img);
+  setAvatarImage(profileImagePreview, profileImagePreviewIcon, img);
+}
+
+function shortGroupLabel(name) {
+  const raw = (name || '').trim();
+  if (!raw) return '?';
+  const chars = Array.from(raw);
+  const isAlnum = (ch) => /[a-z0-9]/i.test(ch);
+  let firstIdx = -1;
+  for (let i = 0; i < chars.length; i++) {
+    if (isAlnum(chars[i])) {
+      firstIdx = i;
+      break;
+    }
+  }
+  if (firstIdx < 0) return '?';
+  const first = chars[firstIdx];
+
+  let second = '';
+  let sepIdx = -1;
+  for (let i = firstIdx + 1; i < chars.length; i++) {
+    if (chars[i] === '-' || chars[i] === ' ') {
+      sepIdx = i;
+      break;
+    }
+  }
+  if (sepIdx >= 0) {
+    for (let i = sepIdx + 1; i < chars.length; i++) {
+      if (isAlnum(chars[i])) {
+        second = chars[i];
+        break;
+      }
+    }
+  }
+  if (!second) {
+    for (let i = firstIdx + 1; i < chars.length; i++) {
+      if (isAlnum(chars[i])) {
+        second = chars[i];
+        break;
+      }
+    }
+  }
+  if (!second) second = first;
+  return (first + second).toUpperCase();
+}
+
+function updateSidebarMode() {
+  const groupMode = isGroupMode();
+  const selected = groupMode ? (latestGroups || []).find((g) => (g.name || '') === activeGroup) : null;
+  const canEditGroupIcon = !!(selected && (selected.owned || ((selected.owner_id || '') === selfLoginID)));
+  dmModeBtn.classList.toggle('sel-rail', !groupMode);
+  friendList.hidden = groupMode;
+  channelList.hidden = !groupMode;
+  friendActionBtn.hidden = groupMode;
+  groupIconBtn.hidden = !(groupMode && canEditGroupIcon);
+  groupShareBtn.hidden = !groupMode;
+  if (groupIconBtn.hidden) groupIconEditor.hidden = true;
+  if (groupMode) {
+    const owner = ((selected && (selected.owner_label || selected.owner_user_id || selected.owner_id)) || '').trim();
+    contextListLabel.textContent = activeGroup || 'Server';
+    if (owner) {
+      contextOwnerLabel.textContent = `owner: ${owner}`;
+      contextOwnerLabel.hidden = false;
+    } else {
+      contextOwnerLabel.textContent = '';
+      contextOwnerLabel.hidden = true;
+    }
+  } else {
+    contextListLabel.textContent = 'Friends';
+    contextOwnerLabel.textContent = '';
+    contextOwnerLabel.hidden = true;
+  }
+}
+
+function updateChatPanelState() {
+  const disabled = !isGroupMode() && !activeTarget;
+  chatPanel.classList.toggle('chat-disabled', disabled);
+  messageEl.disabled = disabled;
+  sendBtn.disabled = disabled;
+}
 
 function updateChatContext() {
   mainWrap.classList.remove('mode-dm', 'mode-group');
-  if (activeGroup) {
+  if (isGroupMode()) {
     mainWrap.classList.add('mode-group');
-    chatTitle.textContent = `${activeGroup}/${activeChannel}`;
+    chatTitle.textContent = `${activeChannel}`;
   } else {
     mainWrap.classList.add('mode-dm');
     if (!activeTarget) {
       chatTitle.textContent = 'Select a friend to direct message';
-      return;
+    } else {
+      const t = (latestTargets || []).find((x) => (x.id || '') === activeTarget);
+      const label = (t && t.label) ? t.label : activeTarget;
+      chatTitle.textContent = `${label} direct message`;
     }
-    const t = (latestTargets || []).find((x) => (x.id || '') === activeTarget);
-    const label = (t && t.label) ? t.label : activeTarget;
-    chatTitle.textContent = `${label} direct message`;
   }
+  updateSidebarMode();
+  updateChatPanelState();
   renderChat();
 }
 
@@ -353,13 +1120,15 @@ function appendInfo(line) {
   infoEl.textContent += line + "\n";
   const lines = infoEl.textContent.split("\n");
   if (lines.length > 500) infoEl.textContent = lines.slice(lines.length - 500).join("\n");
+  const latest = lines.slice().reverse().find((x) => (x || '').trim() !== '') || '';
+  infoPreview.textContent = latest;
   infoEl.scrollTop = infoEl.scrollHeight;
 }
 
 function eventMatchesActiveContext(ev) {
   if (!ev || ev.kind !== 'chat') return false;
   const mode = (ev.mode || '').trim();
-  if (activeGroup) {
+  if (isGroupMode()) {
     const ch = (ev.channel || 'default').trim() || 'default';
     return mode === 'group' && (ev.group || '') === activeGroup && ch === activeChannel;
   }
@@ -369,28 +1138,57 @@ function eventMatchesActiveContext(ev) {
   return false;
 }
 
+function actorProfileImage(loginID) {
+  loginID = (loginID || '').trim();
+  if (!loginID) return '';
+  if (loginID === selfLoginID) return (selfProfileImage || '').trim();
+  const t = (latestTargets || []).find((x) => (x.id || '') === loginID);
+  if (!t) return '';
+  return (t.profile_image || '').trim();
+}
+
+function createChatAvatar(loginID) {
+  const wrap = document.createElement('span');
+  wrap.className = 'chat-avatar';
+  const imgSrc = actorProfileImage(loginID);
+  if (imgSrc) {
+    const img = document.createElement('img');
+    img.src = imgSrc;
+    img.alt = '';
+    wrap.appendChild(img);
+    return wrap;
+  }
+  wrap.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a5 5 0 1 0-5-5 5 5 0 0 0 5 5zm0 2c-4.4 0-8 2-8 4.5V21h16v-2.5C20 16 16.4 14 12 14z"/></svg>';
+  return wrap;
+}
+
 function renderChat() {
   chatEl.innerHTML = '';
   const visible = chatEvents.filter(eventMatchesActiveContext);
   for (const ev of visible) {
     const row = document.createElement('div');
     row.className = 'chat-row';
-    const ts = document.createElement('span');
-    ts.className = 'chat-ts';
-    ts.textContent = ev.ts || '';
+    if (chatShowTime) {
+      const ts = document.createElement('span');
+      ts.className = 'chat-ts';
+      ts.textContent = ev.ts || '';
+      row.appendChild(ts);
+    }
+    if (chatShowProfileImages) {
+      row.appendChild(createChatAvatar(ev.actor_id || ''));
+    }
     const name = document.createElement('span');
     name.className = 'chat-name';
     name.textContent = ev.actor_label || 'unknown';
     if (ev.actor_id) {
       name.title = 'View profile';
-      name.onclick = () => openProfileCard(ev.actor_id);
+      name.onclick = () => openProfileCard(ev.actor_id, name);
     } else {
       name.className = '';
     }
     const msg = document.createElement('span');
     msg.className = 'chat-text';
     msg.textContent = ev.text || '';
-    row.appendChild(ts);
     row.appendChild(name);
     row.appendChild(msg);
     if (ev.invite_key && pendingInviteKeys[ev.invite_key]) {
@@ -454,7 +1252,7 @@ function appendChat(ev) {
     renderTargets(latestTargets, latestPendingFriends);
   }
   if (isGroup && group && ev.actor_id !== selfLoginID) {
-    const isActiveThread = !!activeGroup && activeGroup === group && (activeChannel || 'default') === channel;
+    const isActiveThread = isGroupMode() && activeGroup === group && (activeChannel || 'default') === channel;
     if (!isActiveThread) {
       const key = group + '/' + channel;
       unreadGroupChannel[key] = (unreadGroupChannel[key] || 0) + 1;
@@ -503,11 +1301,11 @@ function currentTarget() {
 }
 
 function currentContextPayload() {
-  if (activeGroup) {
+  if (isGroupMode()) {
     return {mode: 'group', group: activeGroup, channel: activeChannel || 'default'};
   }
-  if (activeTarget) {
-    return {mode: 'dm', target: activeTarget};
+  if (navMode === 'dm') {
+    return {mode: 'dm', target: activeTarget || ''};
   }
   return {};
 }
@@ -598,7 +1396,28 @@ function statusClass(status) {
   return 'status-chip status-unknown';
 }
 
-async function openProfileCard(loginID) {
+function placeProfileCardNear(anchorEl) {
+  if (!anchorEl || window.innerWidth <= 900) {
+    profileCard.style.left = '';
+    profileCard.style.top = '';
+    profileCard.style.right = '';
+    return;
+  }
+  const r = anchorEl.getBoundingClientRect();
+  const width = Math.min(320, window.innerWidth - 24);
+  let left = r.right + 8;
+  if (left + width > window.innerWidth - 12) left = r.left - width - 8;
+  if (left < 12) left = 12;
+  let top = r.top - 6;
+  if (top < 12) top = 12;
+  if (top > window.innerHeight - 220) top = window.innerHeight - 220;
+  profileCard.style.width = width + 'px';
+  profileCard.style.left = Math.round(left) + 'px';
+  profileCard.style.top = Math.round(top) + 'px';
+  profileCard.style.right = 'auto';
+}
+
+async function openProfileCard(loginID, anchorEl) {
   if (!loginID) return;
   try {
     const res = await fetch('/api/profile/card?id=' + encodeURIComponent(loginID));
@@ -610,6 +1429,7 @@ async function openProfileCard(loginID) {
     cardID.appendChild(createCopyIDControl(p.user_id || p.id || loginID));
     cardProfile.textContent = p.profile_text || '(empty)';
     cardRefreshed.textContent = relativeTime(p.last_refreshed || 0);
+    placeProfileCardNear(anchorEl);
     profileCard.hidden = false;
   } catch (e) {
     appendInfo(`profile card failed: ${e.message}`);
@@ -620,7 +1440,7 @@ function renderTargets(targets, pendingFriends) {
   latestTargets = Array.isArray(targets) ? targets : [];
   latestPendingFriends = Array.isArray(pendingFriends) ? pendingFriends : [];
   let changed = false;
-  if (!activeGroup && activeTarget) {
+  if (!isGroupMode() && activeTarget) {
     const found = latestTargets.some((t) => (t.id || '') === activeTarget);
     if (!found) {
       activeTarget = '';
@@ -636,9 +1456,10 @@ function renderTargets(targets, pendingFriends) {
     row.style.wordBreak = 'break-all';
     row.style.overflowWrap = 'anywhere';
     row.style.cursor = 'pointer';
-    if (activeTarget === t.id && !activeGroup) row.classList.add('sel-row-dm');
+    if (activeTarget === t.id && !isGroupMode()) row.classList.add('sel-row-dm');
     row.onclick = () => {
       clearUnreadDM(t.id);
+      navMode = 'dm';
       activeTarget = t.id;
       activeGroup = '';
       activeChannel = 'default';
@@ -675,7 +1496,7 @@ function renderTargets(targets, pendingFriends) {
     info.textContent = 'i';
     info.onclick = (ev) => {
       ev.stopPropagation();
-      openProfileCard(t.id);
+      openProfileCard(t.id, info);
     };
     controls.appendChild(info);
     controls.appendChild(status);
@@ -731,10 +1552,6 @@ function renderTargets(targets, pendingFriends) {
   if ((targets || []).length === 0) {
     if (pending.length === 0) friendList.textContent = 'No friends/targets yet';
   }
-  if (!activeTarget && !activeGroup && (targets || []).length > 0) {
-    activeTarget = targets[0].id || '';
-    changed = true;
-  }
   updateChatContext();
   if (changed) persistContextSoon();
 }
@@ -750,20 +1567,32 @@ function updatePendingInvites(invites) {
   renderChat();
 }
 
-function openCreateServerDialog() {
-  const name = window.prompt('Node/Group name');
-  const group = (name || '').trim();
-  if (!group) return;
-  post('/api/group/create', {group, channel: 'default', public: true})
-    .then(async () => {
-      activeGroup = group;
-      activeChannel = 'default';
-      activeTarget = '';
-      updateChatContext();
-      await poll();
-      persistContextSoon();
-    })
-    .catch((e) => appendInfo(`group-create failed: ${e.message}`));
+async function createGroupFromPanel() {
+  const group = (groupCreateName.value || '').trim();
+  if (!group) {
+    groupCreateName.focus();
+    return;
+  }
+  try {
+    await post('/api/group/create', {group, channel: 'default', public: true});
+    if (groupCreateIconDraft) {
+      await post('/api/group/icon/set', {group, icon: groupCreateIconDraft});
+    }
+    groupCreateEditor.hidden = true;
+    groupCreateName.value = '';
+    groupCreateIconDraft = '';
+    groupCreateIconInput.value = '';
+    setAvatarImage(groupCreateIconPreview, groupCreateIconPreviewIcon, '');
+    navMode = 'group';
+    activeGroup = group;
+    activeChannel = 'default';
+    activeTarget = '';
+    updateChatContext();
+    await poll();
+    persistContextSoon();
+  } catch (e) {
+    appendInfo(`group-create failed: ${e.message}`);
+  }
 }
 
 async function createPublicInviteCodeForActiveGroup() {
@@ -795,6 +1624,7 @@ async function joinByPublicInviteCode() {
     const data = await post('/api/group/join_code', {code});
     const group = (data.group || '').trim();
     if (group) {
+      navMode = 'group';
       activeGroup = group;
       activeChannel = 'default';
       activeTarget = '';
@@ -836,9 +1666,14 @@ function renderGroups(groups) {
   groupList.innerHTML = '';
   const items = latestGroups;
   if (items.length === 0) {
-    groupList.textContent = 'No nodes joined yet';
+    const none = document.createElement('div');
+    none.className = 'rail-label';
+    none.style.width = '100%';
+    none.textContent = 'No servers';
+    groupList.appendChild(none);
     channelList.textContent = 'No channels';
-    if (activeGroup || activeChannel !== 'default') changed = true;
+    if (activeGroup || activeChannel !== 'default' || navMode === 'group') changed = true;
+    navMode = 'dm';
     activeGroup = '';
     activeChannel = 'default';
     updateChatContext();
@@ -846,17 +1681,34 @@ function renderGroups(groups) {
     return;
   }
   const exists = items.some((g) => (g.name || '') === activeGroup);
-  // Keep DM context stable: only auto-select a group when no DM target is active.
-  if (!exists && !activeTarget) {
-    activeGroup = items[0].name || '';
+  if (navMode === 'group' && !exists) {
+    navMode = 'dm';
+    activeGroup = '';
     activeChannel = 'default';
     changed = true;
   }
   for (const g of items) {
-    const row = document.createElement('div');
-    row.className = 'group-row';
-    if (activeGroup === (g.name || '')) row.classList.add('sel-row-group');
-    row.onclick = () => {
+    const wrap = document.createElement('div');
+    wrap.className = 'rail-item';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'rail-btn';
+    if ((g.icon || '').trim()) {
+      const img = document.createElement('img');
+      img.src = g.icon;
+      img.alt = '';
+      img.style.width = '100%';
+      img.style.height = '100%';
+      img.style.objectFit = 'cover';
+      img.style.borderRadius = '11px';
+      btn.appendChild(img);
+    } else {
+      btn.textContent = shortGroupLabel(g.name || '');
+    }
+    btn.title = g.name || '(group)';
+    if (isGroupMode() && activeGroup === (g.name || '')) btn.classList.add('sel-rail');
+    btn.onclick = () => {
+      navMode = 'group';
       activeGroup = g.name || '';
       activeChannel = 'default';
       clearUnreadGroupChannel(activeGroup, activeChannel);
@@ -866,58 +1718,29 @@ function renderGroups(groups) {
       updateChatContext();
       persistContextSoon();
     };
-    const name = document.createElement('div');
-    name.className = 'group-name';
-    name.textContent = g.name || '(group)';
-    row.appendChild(name);
     const gUnread = unreadCountForGroup(g.name || '');
     if (gUnread > 0) {
-      row.appendChild(createUnreadBadge(gUnread));
+      const badge = createUnreadBadge(gUnread);
+      badge.classList.add('rail-badge');
+      btn.appendChild(badge);
     }
-    const infoBtn = document.createElement('button');
-    infoBtn.type = 'button';
-    infoBtn.className = 'row-icon-btn';
-    infoBtn.title = 'Node owner info';
-    infoBtn.textContent = 'i';
-    infoBtn.onclick = async (ev) => {
-      ev.stopPropagation();
-      const ownerID = (g.owner_id || '').trim();
-      const ownerUserID = (g.owner_user_id || '').trim();
-      const ownerLabel = (g.owner_label || '').trim();
-      if (!ownerID) {
-        appendInfo(`node '${g.name || ''}' owner: unknown`);
-        return;
-      }
-      appendInfo(`node '${g.name || ''}' owner: ${ownerLabel || ownerUserID || ownerID} (${ownerUserID || ownerID})`);
-      try { await openProfileCard(ownerID); } catch (_) {}
-    };
-    row.appendChild(infoBtn);
-    const del = document.createElement('button');
-    del.type = 'button';
-    del.className = 'row-icon-btn';
-    del.title = 'Remove';
-    del.textContent = '-';
-    del.onclick = async (ev) => {
-      ev.stopPropagation();
-      if (!window.confirm(`Remove node '${g.name || ''}' from this list?`)) return;
-      try {
-        await post('/api/group/remove', {group: g.name || ''});
-        await poll();
-        persistContextSoon();
-      } catch (e) { appendInfo(`group-remove failed: ${e.message}`); }
-    };
-    row.appendChild(del);
-    groupList.appendChild(row);
+    const name = document.createElement('div');
+    name.className = 'rail-label';
+    name.title = g.name || '';
+    name.textContent = g.name || '(group)';
+    wrap.appendChild(btn);
+    wrap.appendChild(name);
+    groupList.appendChild(wrap);
   }
-  const selected = latestGroups.find((x) => (x.name || '') === activeGroup);
-  document.getElementById('channelCreateBtn').hidden = !(selected && selected.owned);
   renderChannels();
   if (changed) persistContextSoon();
 }
 
 function renderChannels() {
   channelList.innerHTML = '';
+  if (!isGroupMode()) return;
   const g = latestGroups.find((x) => (x.name || '') === activeGroup);
+  const canCreate = !!(g && g.owned);
   const channels = g && Array.isArray(g.channels) ? g.channels : [];
   if (!g) {
     channelList.textContent = 'No channels';
@@ -953,17 +1776,32 @@ function renderChannels() {
     if (cUnread > 0) {
       row.appendChild(createUnreadBadge(cUnread));
     }
-    const invite = document.createElement('button');
-    invite.type = 'button';
-    invite.className = 'row-icon-btn';
-    invite.title = 'Invite friends';
-    invite.textContent = 'Invite';
-    invite.onclick = (ev) => {
-      ev.stopPropagation();
-      openInviteDialog(activeGroup);
-    };
-    row.appendChild(invite);
     channelList.appendChild(row);
+  }
+  if (canCreate) {
+    const addRow = document.createElement('div');
+    addRow.className = 'group-row';
+    addRow.onclick = async () => {
+      const name = window.prompt(`New channel name for ${activeGroup}`);
+      const channel = (name || '').trim();
+      if (!channel) return;
+      try {
+        await post('/api/group/create', {group: activeGroup, channel, public: true});
+        activeChannel = channel;
+        await poll();
+        persistContextSoon();
+      } catch (e) {
+        appendInfo(`channel-create failed: ${e.message}`);
+      }
+    };
+    const plus = document.createElement('div');
+    plus.className = 'group-name';
+    plus.textContent = '+';
+    plus.style.textAlign = 'center';
+    plus.style.fontSize = '18px';
+    plus.style.color = '#8ecbff';
+    addRow.appendChild(plus);
+    channelList.appendChild(addRow);
   }
 }
 
@@ -972,17 +1810,11 @@ async function bootstrap() {
   const data = await res.json();
   selfLoginID = (data.login_id || '').trim();
   selfUserID = (data.user_id || '').trim();
-  friendsUserName.textContent = data.display_name || '(no nickname)';
-  myUserIDText.textContent = selfUserID || '(no user id)';
-  myUserIDCopy.innerHTML = '';
-  myUserIDCopy.appendChild(createCopyIDControl(selfUserID || data.login_id || ''));
+  applySelfProfile(data.display_name || '', data.profile_image || '');
+  profileImageDirty = false;
+  profileImageInput.value = '';
   profileIDCopy.innerHTML = '';
   profileIDCopy.appendChild(createCopyIDControl(selfUserID || data.login_id || ''));
-  const minTTL = Number(data.presence_ttl_min || 180);
-  const maxTTL = Number(data.presence_ttl_max || 900);
-  presenceTTL.min = String(minTTL);
-  presenceTTL.max = String(maxTTL);
-  presenceTTL.value = String(data.presence_ttl_sec || minTTL);
   presenceMode.value = data.presence_visible === false ? 'invisible' : 'visible';
   document.getElementById('displayName').value = data.display_name || '';
   document.getElementById('profileText').value = data.profile_text || '';
@@ -991,13 +1823,17 @@ async function bootstrap() {
   renderGroups(data.groups || []);
   const last = data.last_context || {};
   if (last.mode === 'group') {
+    navMode = 'group';
     activeGroup = (last.group || '').trim();
     activeChannel = (last.channel || 'default').trim() || 'default';
     activeTarget = '';
   } else if (last.mode === 'dm') {
+    navMode = 'dm';
     activeTarget = (last.target || '').trim();
     activeGroup = '';
     activeChannel = 'default';
+  } else {
+    navMode = 'dm';
   }
   renderTargets(latestTargets, data.pending_friends || []);
   updatePendingInvites(data.pending_invites || []);
@@ -1013,18 +1849,26 @@ function resetUIForSetup() {
   since = 0;
   selfLoginID = '';
   selfUserID = '';
-  myUserIDText.textContent = '';
-  myUserIDCopy.innerHTML = '';
+  applySelfProfile('', '');
+  profileImageDirty = false;
+  profileImageInput.value = '';
   latestTargets = [];
   latestPendingFriends = [];
   latestPendingInvites = [];
   latestGroups = [];
+  navMode = 'dm';
   activeTarget = '';
   activeGroup = '';
   activeChannel = 'default';
   unreadDM = {};
   unreadGroupChannel = {};
   pendingInviteKeys = {};
+  groupIconDraft = '';
+  groupIconDirty = false;
+  groupCreateIconDraft = '';
+  groupCreateName.value = '';
+  groupCreateIconInput.value = '';
+  setAvatarImage(groupCreateIconPreview, groupCreateIconPreviewIcon, '');
   if (pollTimer) {
     clearInterval(pollTimer);
     pollTimer = null;
@@ -1034,6 +1878,9 @@ function resetUIForSetup() {
   channelList.textContent = '';
   chatEl.innerHTML = '';
   infoEl.textContent = '';
+  infoPreview.textContent = '';
+  groupIconEditor.hidden = true;
+  groupCreateEditor.hidden = true;
   updateChatContext();
 }
 
@@ -1065,41 +1912,44 @@ async function poll() {
 }
 
 bootstrap().then(poll);
+setInfoCollapsed(true);
+resizeMessageInput();
 if (pollTimer) clearInterval(pollTimer);
 pollTimer = setInterval(poll, 1000);
 
 document.getElementById('send').onclick = async () => {
-  const text = document.getElementById('message').value.trim();
+  const text = messageEl.value.trim();
   if (!text) return;
   try {
-    if (activeGroup) {
+    if (isGroupMode()) {
       await post('/api/group/send', {group: activeGroup, channel: activeChannel, text});
     } else {
       const to = currentTarget();
       if (!to) return;
       await post('/api/send', {to, text});
     }
-    document.getElementById('message').value = '';
+    messageEl.value = '';
+    resizeMessageInput();
   } catch (e) { appendInfo(`send failed: ${e.message}`); }
 };
 
-document.getElementById('message').addEventListener('keydown', async (ev) => {
+messageEl.addEventListener('keydown', async (ev) => {
   if (ev.isComposing) return;
   if (ev.key !== 'Enter') return;
   if (ev.shiftKey) return;
   ev.preventDefault();
-  const msgEl = document.getElementById('message');
-  const text = msgEl.value.trim();
+  const text = messageEl.value.trim();
   if (!text) return;
   try {
-    if (activeGroup) {
+    if (isGroupMode()) {
       await post('/api/group/send', {group: activeGroup, channel: activeChannel, text});
     } else {
       const to = currentTarget();
       if (!to) return;
       await post('/api/send', {to, text});
     }
-    msgEl.value = '';
+    messageEl.value = '';
+    resizeMessageInput();
   } catch (e) { appendInfo(`send failed: ${e.message}`); }
 });
 
@@ -1108,26 +1958,18 @@ document.getElementById('friendAdd').onclick = async () => {
   if (!to) return;
   try {
     await post('/api/friend/add', {to});
+    document.getElementById('friendInput').value = '';
     friendEditor.hidden = true;
   } catch (e) { appendInfo(`friend-add failed: ${e.message}`); }
 };
 
-document.getElementById('serverCreateBtn').onclick = openCreateServerDialog;
-document.getElementById('groupInviteCodeBtn').onclick = createPublicInviteCodeForActiveGroup;
-document.getElementById('groupJoinCodeBtn').onclick = joinByPublicInviteCode;
-
-document.getElementById('channelCreateBtn').onclick = async () => {
-  if (!activeGroup) return;
-  const name = window.prompt(`New channel name for ${activeGroup}`);
-  const channel = (name || '').trim();
-  if (!channel) return;
-  try {
-    await post('/api/group/create', {group: activeGroup, channel, public: true});
-    activeChannel = channel;
-    await poll();
-    persistContextSoon();
-  } catch (e) { appendInfo(`channel-create failed: ${e.message}`); }
-};
+groupCreateSubmit.onclick = createGroupFromPanel;
+groupCreateName.addEventListener('keydown', async (ev) => {
+  if (ev.isComposing) return;
+  if (ev.key !== 'Enter') return;
+  ev.preventDefault();
+  await createGroupFromPanel();
+});
 
 document.getElementById('inviteSend').onclick = async () => {
   const checked = Array.from(inviteList.querySelectorAll('input[type="checkbox"]:checked')).map((el) => el.value);
@@ -1142,29 +1984,35 @@ document.getElementById('saveProfile').onclick = async () => {
   const display_name = document.getElementById('displayName').value.trim();
   const profile_text = document.getElementById('profileText').value.trim();
   try {
-    await post('/api/profile/set', {display_name, profile_text});
-    friendsUserName.textContent = display_name || '(no nickname)';
+    await post('/api/profile/set', {
+      display_name,
+      profile_text,
+      profile_image: selfProfileImage || '',
+      profile_image_set: profileImageDirty
+    });
+    applySelfProfile(display_name || '', selfProfileImage || '');
+    profileImageDirty = false;
+    profileImageInput.value = '';
     profileEditor.hidden = true;
   } catch (e) { appendInfo(`profile save failed: ${e.message}`); }
 };
 
 document.getElementById('presenceSave').onclick = async () => {
   const visible = presenceMode.value !== 'invisible';
-  const ttlRaw = Number(presenceTTL.value || '0');
-  const ttl_sec = Number.isFinite(ttlRaw) ? ttlRaw : 0;
   try {
-    const data = await post('/api/presence/set', {visible, ttl_sec});
-    if (typeof data.ttl_sec === 'number') presenceTTL.value = String(data.ttl_sec);
+    await post('/api/presence/set', {visible});
+    presenceEditor.hidden = true;
   } catch (e) { appendInfo(`presence update failed: ${e.message}`); }
 };
 
-document.getElementById('logoutBtn').onclick = async () => {
+async function doLogout() {
   try {
     await post('/api/setup/disconnect', {});
   } catch (_) {
   }
   window.location.href = '/login';
-};
+}
+footerLogoutBtn.onclick = doLogout;
 </script>
 </body>
 </html>

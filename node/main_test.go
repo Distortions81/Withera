@@ -1016,6 +1016,50 @@ func TestChannelCreateRejectsOverMaxChannelsPerGroup(t *testing.T) {
 	}
 }
 
+func TestProfileSetRejectsOversizedProfileImage(t *testing.T) {
+	cfg := defaultTestServerConfig()
+	addr, _, stop := startTestServer(t, "s1", "", nil, cfg)
+	defer stop()
+
+	alice := newTestClient(t, addr)
+	defer alice.close()
+
+	// At-cap image should be accepted.
+	okImage := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x7f}, maxProfileImageBytes))
+	okBody, err := json.Marshal(map[string]string{
+		"nickname":      "alice",
+		"profile_text":  "hello",
+		"profile_image": okImage,
+	})
+	if err != nil {
+		t.Fatalf("marshal ok profile payload failed: %v", err)
+	}
+	alice.sendAction(t, Packet{Type: "profile_set", Body: string(okBody)})
+	okResp := alice.recv(t, 2*time.Second)
+	if okResp.Type != "profile_data" {
+		t.Fatalf("expected profile_data for at-cap image, got %+v", okResp)
+	}
+
+	// One byte over the cap should be rejected.
+	tooLargeImage := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x55}, maxProfileImageBytes+1))
+	badBody, err := json.Marshal(map[string]string{
+		"nickname":      "alice",
+		"profile_text":  "hello",
+		"profile_image": tooLargeImage,
+	})
+	if err != nil {
+		t.Fatalf("marshal oversized profile payload failed: %v", err)
+	}
+	alice.sendAction(t, Packet{Type: "profile_set", Body: string(badBody)})
+	badResp := alice.recv(t, 2*time.Second)
+	if badResp.Type != "error" {
+		t.Fatalf("expected error for oversized profile image, got %+v", badResp)
+	}
+	if !strings.Contains(badResp.Body, "profile_set failed: profile_image exceeds") {
+		t.Fatalf("unexpected error body: %q", badResp.Body)
+	}
+}
+
 func compressBodyForTest(t *testing.T, s string) string {
 	t.Helper()
 	var buf bytes.Buffer
