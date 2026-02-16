@@ -598,7 +598,7 @@ func (c *webClient) sendSigned(p Packet) error {
 
 func (c *webClient) requestProfile(target string) {
 	target = strings.TrimSpace(target)
-	if !looksLikeLoginID(target) || target == c.loginID {
+	if !looksLikeLoginID(target) {
 		return
 	}
 	_ = c.sendSigned(Packet{Type: "profile_get", To: target})
@@ -635,6 +635,38 @@ func (c *webClient) maybeRequestProfile(target string) {
 	c.profileRequested[target] = nowSec
 	c.mu.Unlock()
 	c.requestProfile(target)
+}
+
+func (c *webClient) knownPeerIDsLocked() []string {
+	set := make(map[string]struct{})
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if !looksLikeLoginID(id) || id == c.loginID {
+			return
+		}
+		set[id] = struct{}{}
+	}
+
+	for id := range c.friends {
+		add(id)
+	}
+	// Contacts are treated as durable friend identities across sessions.
+	for _, id := range c.contacts {
+		add(id)
+	}
+
+	out := make([]string, 0, len(set))
+	for id := range set {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (c *webClient) knownPeerIDs() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.knownPeerIDsLocked()
 }
 
 func (c *webClient) requestPresence(target string) {
@@ -951,6 +983,32 @@ func (c *webClient) upsertPeerProfileImage(loginID, image string) {
 	refCopy := cloneInt64Map(c.profileRefreshed)
 	c.mu.Unlock()
 	_ = saveProfile(c.profilePath, displayName, profileText, "", false, nickCopy, peerCopy, peerImgCopy, peerSumCopy, refCopy)
+}
+
+func (c *webClient) applyOwnProfileFromServer(payload profilePayload) {
+	name := strings.TrimSpace(payload.Nickname)
+	text := strings.TrimSpace(payload.ProfileText)
+	image := strings.TrimSpace(payload.ProfileImage)
+
+	c.mu.Lock()
+	if name != "" {
+		c.displayName = name
+	}
+	c.profileText = text
+	c.profileImage = image
+	displayName := c.displayName
+	if strings.TrimSpace(displayName) == "" {
+		displayName = defaultDisplayName()
+		c.displayName = displayName
+	}
+	nickCopy := cloneStringMap(c.nicknames)
+	peerCopy := cloneStringMap(c.peerProfiles)
+	peerImgCopy := cloneStringMap(c.peerProfileImages)
+	peerSumCopy := cloneStringMap(c.peerImageChecksums)
+	refCopy := cloneInt64Map(c.profileRefreshed)
+	c.mu.Unlock()
+
+	_ = saveProfile(c.profilePath, displayName, text, image, true, nickCopy, peerCopy, peerImgCopy, peerSumCopy, refCopy)
 }
 
 func (c *webClient) rememberGroup(group string, channel string) {
@@ -1330,6 +1388,11 @@ func (c *webClient) networkLoop(ch <-chan netMsg) {
 				c.addEvent("info", "profile parse failed")
 				continue
 			}
+			if strings.TrimSpace(p.From) == c.loginID {
+				c.applyOwnProfileFromServer(prof)
+				c.addEvent("info", "profile synced from server")
+				continue
+			}
 			nick := strings.TrimSpace(prof.Nickname)
 			if nick != "" {
 				c.upsertNickname(p.From, nick)
@@ -1421,25 +1484,18 @@ func (c *webClient) reconnectLoop() {
 		c.enc = enc
 		c.pubB64 = pubB64
 		c.reconnecting = false
-		contacts := make([]string, 0, len(c.contacts))
-		for _, id := range c.contacts {
-			if looksLikeLoginID(id) && id != c.loginID {
-				contacts = append(contacts, id)
-			}
-		}
+		peers := c.knownPeerIDsLocked()
 		c.mu.Unlock()
 		if oldConn != nil && oldConn != conn {
 			_ = oldConn.Close()
 		}
 		c.addEvent("info", "reconnected")
 		go c.networkLoop(events)
-		if err := c.publishOwnProfile(); err != nil {
-			c.addEvent("info", "profile republish failed: "+err.Error())
-		}
+		c.requestProfile(c.loginID)
 		if err := c.sendPresenceKeepalive(); err != nil {
 			c.addEvent("info", "presence keepalive failed: "+err.Error())
 		}
-		for _, id := range contacts {
+		for _, id := range peers {
 			c.requestProfile(id)
 			c.requestPresence(id)
 		}
@@ -2557,6 +2613,10 @@ func looksLikeLoginID(v string) bool {
 	return true
 }
 
+func isBlankJSONFile(data []byte) bool {
+	return len(bytes.TrimSpace(data)) == 0
+}
+
 func loadContacts(path string) (map[string]string, error) {
 	out := make(map[string]string)
 	data, err := os.ReadFile(path)
@@ -2565,6 +2625,9 @@ func loadContacts(path string) (map[string]string, error) {
 			return out, nil
 		}
 		return nil, err
+	}
+	if isBlankJSONFile(data) {
+		return out, nil
 	}
 	var f contactsFile
 	if err := json.Unmarshal(data, &f); err != nil {
@@ -2627,6 +2690,9 @@ func loadUIState(path string) ([]groupEntry, chatContext, map[string]string, err
 		}
 		return nil, chatContext{}, nil, err
 	}
+	if isBlankJSONFile(data) {
+		return nil, chatContext{}, nil, nil
+	}
 	var f uiStateFile
 	if err := json.Unmarshal(data, &f); err != nil {
 		return nil, chatContext{}, nil, err
@@ -2676,6 +2742,9 @@ func loadProfile(path string) (string, string, string, map[string]string, map[st
 			return "", "", "", nicks, peers, peerImages, peerChecksums, refs, nil
 		}
 		return "", "", "", nil, nil, nil, nil, nil, err
+	}
+	if isBlankJSONFile(data) {
+		return "", "", "", nicks, peers, peerImages, peerChecksums, refs, nil
 	}
 	var f profileFile
 	if err := json.Unmarshal(data, &f); err != nil {
@@ -2975,15 +3044,17 @@ func e2eeStatePathForKey(home string, keyPath string) string {
 
 func loadOrCreateE2EEKey(path string) (*ecdh.PrivateKey, string, error) {
 	if data, err := os.ReadFile(path); err == nil {
-		var kf e2eeKeyFile
-		if err := json.Unmarshal(data, &kf); err != nil {
-			return nil, "", err
+		if !isBlankJSONFile(data) {
+			var kf e2eeKeyFile
+			if err := json.Unmarshal(data, &kf); err != nil {
+				return nil, "", err
+			}
+			priv, pubB64, err := netsec.ParseX25519PrivateKeyB64(kf.PrivateKey)
+			if err != nil {
+				return nil, "", err
+			}
+			return priv, pubB64, nil
 		}
-		priv, pubB64, err := netsec.ParseX25519PrivateKeyB64(kf.PrivateKey)
-		if err != nil {
-			return nil, "", err
-		}
-		return priv, pubB64, nil
 	}
 	priv, pubB64, err := netsec.NewX25519Identity()
 	if err != nil {
@@ -3014,6 +3085,9 @@ func loadE2EEState(path string) (map[string][]string, map[string]map[string]int6
 			return peerKeys, nonces, nil
 		}
 		return nil, nil, err
+	}
+	if isBlankJSONFile(data) {
+		return peerKeys, nonces, nil
 	}
 	var f e2eeStateFile
 	if err := json.Unmarshal(data, &f); err != nil {
@@ -3653,14 +3727,13 @@ func newWebClientForIdentity(serverAddr string, home string, keyPath string, con
 	client.addEvent("info", "connected to node "+serverAddr)
 	client.addEvent("info", "login_id: "+loginID)
 	client.addEvent("info", "display name: "+displayName)
-	if err := client.publishOwnProfile(); err != nil {
-		client.addEvent("info", "profile publish failed: "+err.Error())
-	}
+	client.requestProfile(client.loginID)
 	if err := client.sendPresenceKeepalive(); err != nil {
 		client.addEvent("info", "presence keepalive failed: "+err.Error())
 	}
-	for _, id := range contacts {
+	for _, id := range client.knownPeerIDs() {
 		client.requestProfile(id)
+		client.requestPresence(id)
 	}
 
 	go client.networkLoop(events)
