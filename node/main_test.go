@@ -18,6 +18,66 @@ import (
 	"withera/internal/netsec"
 )
 
+type friendKeyPayload struct {
+	E2EEPub string `json:"e2ee_pub"`
+	PubKey  string `json:"pub_key"`
+	Sig     string `json:"sig"`
+	TS      int64  `json:"ts"`
+	Nonce   string `json:"nonce"`
+}
+
+func friendKeyMessage(e2eePub string, ts int64, nonce string) []byte {
+	return []byte(fmt.Sprintf("friend-e2ee-key-v1:%s:%d:%s", strings.TrimSpace(e2eePub), ts, strings.TrimSpace(nonce)))
+}
+
+func buildSignedFriendKeyBody(t *testing.T, priv ed25519.PrivateKey, e2eePubB64 string, ts int64, nonce string) string {
+	t.Helper()
+	pub := priv.Public().(ed25519.PublicKey)
+	sig := ed25519.Sign(priv, friendKeyMessage(e2eePubB64, ts, nonce))
+	payload := friendKeyPayload{
+		E2EEPub: e2eePubB64,
+		PubKey:  base64.StdEncoding.EncodeToString(pub),
+		Sig:     base64.StdEncoding.EncodeToString(sig),
+		TS:      ts,
+		Nonce:   nonce,
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal friend key payload failed: %v", err)
+	}
+	return string(b)
+}
+
+func parseAndVerifyFriendKeyBody(t *testing.T, body string, fromLoginID string) string {
+	t.Helper()
+	var payload friendKeyPayload
+	if err := json.Unmarshal([]byte(strings.TrimSpace(body)), &payload); err != nil {
+		t.Fatalf("friend key payload unmarshal failed: %v", err)
+	}
+	e2eePub := strings.TrimSpace(payload.E2EEPub)
+	signingPubB64 := strings.TrimSpace(payload.PubKey)
+	sigB64 := strings.TrimSpace(payload.Sig)
+	nonce := strings.TrimSpace(payload.Nonce)
+	if e2eePub == "" || signingPubB64 == "" || sigB64 == "" || nonce == "" || payload.TS <= 0 {
+		t.Fatalf("friend key payload incomplete: %+v", payload)
+	}
+	pubRaw, err := base64.StdEncoding.DecodeString(signingPubB64)
+	if err != nil || len(pubRaw) != ed25519.PublicKeySize {
+		t.Fatalf("friend key payload pubkey invalid: %v", err)
+	}
+	if got := loginIDForPubKey(pubRaw); got != strings.TrimSpace(fromLoginID) {
+		t.Fatalf("friend key identity mismatch: got=%s want=%s", got, strings.TrimSpace(fromLoginID))
+	}
+	sigRaw, err := base64.StdEncoding.DecodeString(sigB64)
+	if err != nil || len(sigRaw) != ed25519.SignatureSize {
+		t.Fatalf("friend key payload signature encoding invalid: %v", err)
+	}
+	if !ed25519.Verify(ed25519.PublicKey(pubRaw), friendKeyMessage(e2eePub, payload.TS, nonce), sigRaw) {
+		t.Fatalf("friend key payload signature verify failed")
+	}
+	return e2eePub
+}
+
 type testClient struct {
 	conn    net.Conn
 	enc     *json.Encoder
@@ -380,6 +440,101 @@ func TestMessageDeliveryBetweenClients(t *testing.T) {
 	}
 	if p.From != alice.loginID || p.To != bob.loginID || p.Body != body {
 		t.Fatalf("unexpected payload: %+v", p)
+	}
+}
+
+func TestE2EEDMDeliveryWithFriendKeyExchange(t *testing.T) {
+	cfg := defaultTestServerConfig()
+	addr, _, stop := startTestServer(t, "s1", "", nil, cfg)
+	defer stop()
+
+	alice := newTestClient(t, addr)
+	defer alice.close()
+	bob := newTestClient(t, addr)
+	defer bob.close()
+
+	aliceE2EEPriv, aliceE2EEPubB64, err := netsec.NewX25519Identity()
+	if err != nil {
+		t.Fatalf("alice e2ee keygen failed: %v", err)
+	}
+	bobE2EEPriv, bobE2EEPubB64, err := netsec.NewX25519Identity()
+	if err != nil {
+		t.Fatalf("bob e2ee keygen failed: %v", err)
+	}
+	bobDevice2Priv, bobDevice2PubB64, err := netsec.NewX25519Identity()
+	if err != nil {
+		t.Fatalf("bob device2 e2ee keygen failed: %v", err)
+	}
+
+	now := time.Now().UnixMilli()
+	aliceFriendKeyBody := buildSignedFriendKeyBody(t, alice.priv, aliceE2EEPubB64, now, "nonce-alice-1")
+	bobFriendKeyBody := buildSignedFriendKeyBody(t, bob.priv, bobE2EEPubB64, now, "nonce-bob-1")
+
+	alice.sendAction(t, Packet{Type: "friend_add", To: bob.loginID, Body: aliceFriendKeyBody})
+
+	req := bob.recv(t, 2*time.Second)
+	if req.Type != "friend_request" {
+		t.Fatalf("expected friend_request, got: %+v", req)
+	}
+	if req.From != alice.loginID || req.To != bob.loginID {
+		t.Fatalf("unexpected friend_request addressing: %+v", req)
+	}
+	aliceKeyFromRequest := parseAndVerifyFriendKeyBody(t, req.Body, req.From)
+	if aliceKeyFromRequest != aliceE2EEPubB64 {
+		t.Fatalf("unexpected alice e2ee key in request: got=%s want=%s", aliceKeyFromRequest, aliceE2EEPubB64)
+	}
+
+	bob.sendAction(t, Packet{Type: "friend_accept", To: alice.loginID, Body: bobFriendKeyBody})
+
+	upd := alice.recv(t, 2*time.Second)
+	if upd.Type != "friend_update" {
+		t.Fatalf("expected friend_update, got: %+v", upd)
+	}
+	if upd.From != bob.loginID || upd.To != alice.loginID {
+		t.Fatalf("unexpected friend_update addressing: %+v", upd)
+	}
+	bobKeyFromUpdate := parseAndVerifyFriendKeyBody(t, upd.Body, upd.From)
+	if bobKeyFromUpdate != bobE2EEPubB64 {
+		t.Fatalf("unexpected bob e2ee key in update: got=%s want=%s", bobKeyFromUpdate, bobE2EEPubB64)
+	}
+
+	confirmed := bob.recv(t, 2*time.Second)
+	if confirmed.Type != "friend_update" {
+		t.Fatalf("expected friend_update confirmation, got: %+v", confirmed)
+	}
+	if confirmed.From != alice.loginID || confirmed.To != bob.loginID || strings.TrimSpace(confirmed.Body) != "friends" {
+		t.Fatalf("unexpected friend confirmation update: %+v", confirmed)
+	}
+
+	plaintext := "secret hello"
+	encrypted, err := netsec.EncryptDMMulti(aliceE2EEPriv, []string{bobE2EEPubB64, bobDevice2PubB64}, plaintext)
+	if err != nil {
+		t.Fatalf("encrypt failed: %v", err)
+	}
+	alice.sendAction(t, Packet{Type: "send", To: bob.loginID, Body: encrypted})
+
+	d := bob.recv(t, 2*time.Second)
+	if d.Type != "deliver" {
+		t.Fatalf("expected deliver, got: %+v", d)
+	}
+	if d.From != alice.loginID || d.To != bob.loginID {
+		t.Fatalf("unexpected deliver addressing: %+v", d)
+	}
+
+	got1, err := netsec.DecryptDM(bobE2EEPriv, d.Body)
+	if err != nil {
+		t.Fatalf("bob decrypt failed: %v", err)
+	}
+	if got1 != plaintext {
+		t.Fatalf("bob plaintext mismatch: got=%q want=%q", got1, plaintext)
+	}
+
+	got2, err := netsec.DecryptDM(bobDevice2Priv, d.Body)
+	if err != nil {
+		t.Fatalf("bob device2 decrypt failed: %v", err)
+	}
+	if got2 != plaintext {
+		t.Fatalf("bob device2 plaintext mismatch: got=%q want=%q", got2, plaintext)
 	}
 }
 

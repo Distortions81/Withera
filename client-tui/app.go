@@ -816,31 +816,35 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			directCtx := ""
-			if strings.TrimSpace(m.group) != "" || strings.TrimSpace(m.channel) != "" {
-				if strings.TrimSpace(m.group) == "" || strings.TrimSpace(m.channel) == "" {
-					return m, logLine("set both /group and /channel, or use /chat for direct messages")
+				if strings.TrimSpace(m.group) != "" || strings.TrimSpace(m.channel) != "" {
+					if strings.TrimSpace(m.group) == "" || strings.TrimSpace(m.channel) == "" {
+						return m, logLine("set both /group and /channel, or use /chat for direct messages")
+					}
+					if err := m.sendSigned(Packet{Type: "channel_send", Group: m.group, Channel: m.channel, Body: line}); err != nil {
+						channelCtx := groupChannelKey(m.group, m.channel)
+						m.addChatEntry("system", "unable to send: "+err.Error(), "", channelCtx)
+						return m, nil
+					}
+					// Channel sends are echoed back by the server to the sender.
+					// Avoid local append to prevent duplicate self-messages.
+					return m, nil
 				}
-				if err := m.sendSigned(Packet{Type: "channel_send", Group: m.group, Channel: m.channel, Body: line}); err != nil {
-					return m, tea.Batch(logLine("send error: "+err.Error()), tea.Quit)
-				}
-				// Channel sends are echoed back by the server to the sender.
-				// Avoid local append to prevent duplicate self-messages.
-				return m, nil
-			}
 
-			if strings.TrimSpace(m.to) == "" {
-				return m, logLine("set recipient with /to <login_id|alias> or /chat <login_id|alias>")
-			}
-			encryptedBody, err := m.encryptDirectMessage(m.to, line)
-			if err != nil {
-				return m, logLine("send error: " + err.Error())
-			}
-			if err := m.sendSigned(Packet{Type: "send", To: m.to, Body: encryptedBody}); err != nil {
-				return m, tea.Batch(logLine("send error: "+err.Error()), tea.Quit)
-			}
-			if m.displayPeer(m.to) == shortID(m.to) {
-				m.requestProfile(m.to)
-			}
+				if strings.TrimSpace(m.to) == "" {
+					return m, logLine("set recipient with /to <login_id|alias> or /chat <login_id|alias>")
+				}
+				encryptedBody, err := m.encryptDirectMessage(m.to, line)
+				if err != nil {
+					m.addChatEntry("system", err.Error(), m.to, "")
+					return m, nil
+				}
+				if err := m.sendSigned(Packet{Type: "send", To: m.to, Body: encryptedBody}); err != nil {
+					m.addChatEntry("system", "unable to send: "+err.Error(), m.to, "")
+					return m, nil
+				}
+				if m.displayPeer(m.to) == shortID(m.to) {
+					m.requestProfile(m.to)
+				}
 			directCtx = m.to
 			m.addChatEntry(m.displayName, line, directCtx, "")
 			return m, nil
@@ -1032,13 +1036,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.setPresence(msg.pkt.From, msg.pkt.Body, 0)
 			}
 			return m, waitNet(m.events)
-		case "error":
-			m.addInfoEntry("server error: " + msg.pkt.Body)
-			return m, waitNet(m.events)
-		default:
-			b, _ := json.Marshal(msg.pkt)
-			m.addInfoEntry("server: " + string(b))
-			return m, waitNet(m.events)
+			case "error":
+				body := strings.TrimSpace(msg.pkt.Body)
+				if body == "" {
+					return m, waitNet(m.events)
+				}
+				if strings.TrimSpace(m.group) != "" && strings.TrimSpace(m.channel) != "" {
+					channelCtx := groupChannelKey(m.group, m.channel)
+					m.addChatEntry("system", "node error: "+body, "", channelCtx)
+				} else if strings.TrimSpace(m.to) != "" {
+					m.addChatEntry("system", "node error: "+body, m.to, "")
+				} else {
+					m.addInfoEntry("server error: " + body)
+				}
+				return m, waitNet(m.events)
+			default:
+				b, _ := json.Marshal(msg.pkt)
+				m.addInfoEntry("server: " + string(b))
+				return m, waitNet(m.events)
 		}
 	case localMsg:
 		m.addInfoEntry(msg.line)
@@ -1989,9 +2004,19 @@ func (m *model) encryptDirectMessage(target string, plaintext string) (string, e
 	target = strings.TrimSpace(target)
 	recipientPubs := append([]string(nil), m.peerE2EEMulti[target]...)
 	if len(recipientPubs) == 0 {
-		return "", fmt.Errorf("missing verified recipient e2ee key; complete friend handshake")
+		return "", fmt.Errorf("unable to send: recipient encryption key is missing or not verified; run /friend-add %s (they must accept) to exchange keys", shortID(target))
 	}
-	return netsec.EncryptDMMulti(m.e2ee, recipientPubs, plaintext)
+	encrypted, err := netsec.EncryptDMMulti(m.e2ee, recipientPubs, plaintext)
+	if err == nil {
+		return encrypted, nil
+	}
+	msg := strings.TrimSpace(err.Error())
+	switch {
+	case strings.Contains(msg, "invalid recipient e2ee key"), strings.Contains(msg, "no recipient keys"):
+		return "", fmt.Errorf("unable to send: recipient encryption key is invalid; re-run /friend-add %s (they must accept) to refresh keys", shortID(target))
+	default:
+		return "", err
+	}
 }
 
 func (m *model) friendKeyBody() string {

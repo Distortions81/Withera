@@ -1278,6 +1278,16 @@ function actorProfileImage(loginID) {
   return img;
 }
 
+function actorLabel(loginID, fallback) {
+  loginID = (loginID || '').trim();
+  if (!loginID) return (fallback || '').trim() || 'unknown';
+  if (loginID === selfLoginID) return (selfDisplayName || '').trim() || (fallback || '').trim() || 'you';
+  const t = (latestTargets || []).find((x) => (x.id || '') === loginID);
+  const label = (t && (t.label || '').trim()) ? t.label.trim() : '';
+  if (label) return label;
+  return (fallback || '').trim() || loginID;
+}
+
 function createChatAvatar(loginID) {
   const wrap = document.createElement('span');
   wrap.className = 'chat-avatar';
@@ -1310,7 +1320,7 @@ function renderChat() {
     }
     const name = document.createElement('span');
     name.className = 'chat-name';
-    name.textContent = ev.actor_label || 'unknown';
+    name.textContent = actorLabel(ev.actor_id, ev.actor_label);
     if (ev.actor_id) {
       name.title = 'View profile';
       name.onclick = () => openProfileCard(ev.actor_id, name);

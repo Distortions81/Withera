@@ -253,6 +253,7 @@ type Server struct {
 	peerBanFor          time.Duration
 	friends             map[string]map[string]struct{}
 	friendAdds          map[string]map[string]struct{}
+	friendAddBodies     map[string]map[string]string
 	channels            map[string]*ChannelState
 	profiles            map[string]profilePayload
 	profileUpdated      map[string]int64
@@ -319,14 +320,15 @@ func NewServer(id, ownerPubKeyB64 string, ownerPriv ed25519.PrivateKey, advertis
 		peerScore:                make(map[string]int),
 		peerBanned:               make(map[string]time.Time),
 		peerBanScore:             defaultPeerBanScore,
-		peerBanFor:               defaultPeerBanFor,
-		friends:                  make(map[string]map[string]struct{}),
-		friendAdds:               make(map[string]map[string]struct{}),
-		channels:                 make(map[string]*ChannelState),
-		profiles:                 make(map[string]profilePayload),
-		profileUpdated:           make(map[string]int64),
-		groupProfiles:            make(map[string]groupProfilePayload),
-		groupProfileUpdated:      make(map[string]int64),
+			peerBanFor:               defaultPeerBanFor,
+			friends:                  make(map[string]map[string]struct{}),
+			friendAdds:               make(map[string]map[string]struct{}),
+			friendAddBodies:          make(map[string]map[string]string),
+			channels:                 make(map[string]*ChannelState),
+			profiles:                 make(map[string]profilePayload),
+			profileUpdated:           make(map[string]int64),
+			groupProfiles:            make(map[string]groupProfilePayload),
+			groupProfileUpdated:      make(map[string]int64),
 		presence:                 make(map[string]presenceState),
 		routes:                   make(map[string]userRoute),
 		startedAt:                time.Now(),
@@ -1847,12 +1849,22 @@ func (s *Server) handleFriendAdd(p Packet) {
 		s.friendAdds[p.From] = make(map[string]struct{})
 	}
 	s.friendAdds[p.From][p.To] = struct{}{}
+	if s.friendAddBodies[p.From] == nil {
+		s.friendAddBodies[p.From] = make(map[string]string)
+	}
+	s.friendAddBodies[p.From][p.To] = p.Body
 	_, reverseExists := s.friendAdds[p.To][p.From]
 	if reverseExists {
 		s.addFriendEdgeLocked(p.From, p.To)
 		s.addFriendEdgeLocked(p.To, p.From)
 		delete(s.friendAdds[p.From], p.To)
 		delete(s.friendAdds[p.To], p.From)
+		if bodies := s.friendAddBodies[p.From]; bodies != nil {
+			delete(bodies, p.To)
+		}
+		if bodies := s.friendAddBodies[p.To]; bodies != nil {
+			delete(bodies, p.From)
+		}
 	}
 	s.mu.Unlock()
 
@@ -1862,6 +1874,7 @@ func (s *Server) handleFriendAdd(p Packet) {
 		s.notifyUserOrQueue(Packet{Type: "friend_update", From: p.To, To: p.From, Body: "friends"})
 		return
 	}
+	log.Printf("friend request pending: from=%s to=%s", p.From, p.To)
 	s.notifyUserOrQueue(Packet{Type: "friend_request", From: p.From, To: p.To, Body: p.Body})
 }
 
@@ -1875,6 +1888,9 @@ func (s *Server) handleFriendAccept(p Packet) {
 		s.addFriendEdgeLocked(p.From, p.To)
 		s.addFriendEdgeLocked(p.To, p.From)
 		delete(s.friendAdds[p.To], p.From)
+		if bodies := s.friendAddBodies[p.To]; bodies != nil {
+			delete(bodies, p.From)
+		}
 	}
 	s.mu.Unlock()
 	if !pending {
@@ -2605,6 +2621,43 @@ func (s *Server) deliverPending(loginID string) {
 	}
 }
 
+func (s *Server) deliverPendingFriendRequests(loginID string) {
+	type pendingReq struct {
+		from string
+		body string
+	}
+
+	s.mu.RLock()
+	pending := make([]pendingReq, 0)
+	for from, tos := range s.friendAdds {
+		if tos == nil {
+			continue
+		}
+		if _, ok := tos[loginID]; !ok {
+			continue
+		}
+		body := ""
+		if bodies := s.friendAddBodies[from]; bodies != nil {
+			body = bodies[loginID]
+		}
+		pending = append(pending, pendingReq{from: from, body: body})
+	}
+	s.mu.RUnlock()
+
+	for _, req := range pending {
+		log.Printf("delivering pending friend request: from=%s to=%s", req.from, loginID)
+		s.notifyUserOrQueue(Packet{
+			Type:      "friend_request",
+			ID:        s.nextMessageID(),
+			From:      req.from,
+			To:        loginID,
+			Body:      req.body,
+			Origin:    s.id,
+			CreatedAt: time.Now().UnixMilli(),
+		})
+	}
+}
+
 func (s *Server) forwardToPeers(exceptID string, p Packet) {
 	raw, _ := json.Marshal(p)
 	type target struct {
@@ -2671,27 +2724,35 @@ func (s *Server) forwardToPeers(exceptID string, p Packet) {
 		if hasRemoteMembers && (unknownRoute || len(targetIDs) == 0) {
 			shouldFlood = true
 		}
-	case strings.TrimSpace(p.To) != "":
-		if len(s.users[p.To]) > 0 {
-			break
-		}
-		route, ok := s.routes[p.To]
-		if !ok {
-			shouldFlood = true
-			break
-		}
-		if time.Since(route.seenAt) > routeEntryTTL {
-			delete(s.routes, p.To)
-			shouldFlood = true
-			break
-		}
-		if route.peerID == "" || route.peerID == exceptID {
-			break
-		}
-		if _, ok := relayPeers[route.peerID]; ok {
-			targetIDs[route.peerID] = struct{}{}
-			break
-		}
+		case strings.TrimSpace(p.To) != "":
+			if len(s.users[p.To]) > 0 {
+				break
+			}
+			route, ok := s.routes[p.To]
+			if !ok {
+				shouldFlood = true
+				break
+			}
+			if time.Since(route.seenAt) > routeEntryTTL {
+				delete(s.routes, p.To)
+				shouldFlood = true
+				break
+			}
+			if route.peerID == "" {
+				// Stale "local" hint: the user isn't actually connected here. Flood so the packet can reach the
+				// correct node, instead of being silently dropped.
+				shouldFlood = true
+				break
+			}
+			if route.peerID == exceptID {
+				// We can't send it back where it came from; treat as stale/ambiguous and flood.
+				shouldFlood = true
+				break
+			}
+			if _, ok := relayPeers[route.peerID]; ok {
+				targetIDs[route.peerID] = struct{}{}
+				break
+			}
 		shouldFlood = true
 	default:
 		shouldFlood = true
@@ -2771,6 +2832,7 @@ func (s *Server) handleUser(loginID string, c *Conn, reader *bufio.Reader, rl *r
 	log.Printf("user connected: %s", loginID)
 	s.notifyFriendsPresence(loginID)
 	s.deliverPending(loginID)
+	s.deliverPendingFriendRequests(loginID)
 	s.replayPersistedMemberships(loginID)
 
 	for {

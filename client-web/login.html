@@ -408,7 +408,7 @@
 <script>
 const setupList = document.getElementById('setupList');
 const setupErr = document.getElementById('setupErr');
-const setupStatus = document.getElementById('setupStatus');
+const setupStatusEl = document.getElementById('setupStatus');
 const setupStatusText = document.getElementById('setupStatusText');
 const setupConnectCancel = document.getElementById('setupConnectCancel');
 const setupRecoveryInput = document.getElementById('setupRecoveryInput');
@@ -443,7 +443,7 @@ async function post(url, body) {
   return data;
 }
 
-async function setupStatus() {
+async function fetchSetupStatus() {
   const res = await fetch('/api/setup/status');
   if (!res.ok) throw new Error('setup status failed');
   return res.json();
@@ -535,7 +535,7 @@ function renderSetupIdentities(ids) {
 }
 
 async function refreshSetupUI() {
-  const st = await setupStatus();
+  const st = await fetchSetupStatus();
   if (st.connected) {
     window.location.href = '/app';
     return st;
@@ -546,13 +546,13 @@ async function refreshSetupUI() {
 
 function setConnectBusy(on, message) {
   connectBusy = !!on;
-  if (setupStatus) {
+  if (setupStatusEl) {
     if (connectBusy) {
-      setupStatus.hidden = false;
+      setupStatusEl.hidden = false;
       if (setupStatusText) setupStatusText.textContent = message || 'Connecting...';
       if (setupConnectCancel) setupConnectCancel.hidden = false;
     } else {
-      setupStatus.hidden = true;
+      setupStatusEl.hidden = true;
       if (setupStatusText) setupStatusText.textContent = 'Connecting...';
       if (setupConnectCancel) setupConnectCancel.hidden = true;
     }

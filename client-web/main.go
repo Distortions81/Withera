@@ -467,6 +467,39 @@ func (c *webClient) addChatEventWithActor(text string, actorID string, mode stri
 	}
 }
 
+func (c *webClient) addSystemChatEvent(mode string, target string, group string, channel string, text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.nextSeq++
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode != "dm" && mode != "group" {
+		mode = ""
+	}
+	e := webEvent{
+		Seq:        c.nextSeq,
+		Kind:       "chat",
+		Text:       text,
+		TS:         stamp(),
+		ActorID:    "",
+		ActorLabel: "system",
+		Mode:       mode,
+		Target:     strings.TrimSpace(target),
+		Group:      strings.TrimSpace(group),
+		Channel:    strings.TrimSpace(channel),
+	}
+	if e.Mode == "group" && e.Channel == "" {
+		e.Channel = "default"
+	}
+	c.events = append(c.events, e)
+	if len(c.events) > 1000 {
+		c.events = c.events[len(c.events)-1000:]
+	}
+}
+
 func (c *webClient) addInviteChatEvent(text string, actorID string, target string, inviteKey string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -885,9 +918,19 @@ func (c *webClient) encryptDirectMessage(target string, plaintext string) (strin
 	e2eePriv := c.e2ee
 	c.mu.Unlock()
 	if len(recipientPubs) == 0 {
-		return "", fmt.Errorf("missing verified recipient e2ee key; complete friend handshake")
+		return "", fmt.Errorf("unable to send: recipient encryption key is missing or not verified; send/accept a friend request to exchange keys")
 	}
-	return netsec.EncryptDMMulti(e2eePriv, recipientPubs, plaintext)
+	encrypted, err := netsec.EncryptDMMulti(e2eePriv, recipientPubs, plaintext)
+	if err == nil {
+		return encrypted, nil
+	}
+	msg := strings.TrimSpace(err.Error())
+	switch {
+	case strings.Contains(msg, "invalid recipient e2ee key"), strings.Contains(msg, "no recipient keys"):
+		return "", fmt.Errorf("unable to send: recipient encryption key is invalid; re-run friend handshake (send/accept friend request) to refresh keys")
+	default:
+		return "", err
+	}
 }
 
 func (c *webClient) friendKeyBody() string {
@@ -1638,15 +1681,28 @@ func (c *webClient) networkLoop(ch <-chan netMsg) {
 			} else {
 				c.setPresence(p.From, p.Body, 0)
 			}
-		case "error":
-			if c.pruneUnknownGroupOrChannel(p.Body) {
-				c.addEvent("info", "removed stale group/channel from UI")
+			case "error":
+				if c.pruneUnknownGroupOrChannel(p.Body) {
+					c.addEvent("info", "removed stale group/channel from UI")
+				}
+				c.mu.Lock()
+				ctx := c.lastContext
+				c.mu.Unlock()
+				body := strings.TrimSpace(p.Body)
+				if body != "" {
+					switch strings.ToLower(strings.TrimSpace(ctx.Mode)) {
+					case "group":
+						c.addSystemChatEvent("group", "", ctx.Group, ctx.Channel, "node error: "+body)
+					case "dm":
+						c.addSystemChatEvent("dm", ctx.Target, "", "", "node error: "+body)
+					default:
+						c.addEvent("info", "node error: "+body)
+					}
+				}
+			default:
+				raw, _ := json.Marshal(p)
+				c.addEvent("info", "node: "+string(raw))
 			}
-			c.addEvent("info", "node error: "+p.Body)
-		default:
-			raw, _ := json.Marshal(p)
-			c.addEvent("info", "node: "+string(raw))
-		}
 	}
 }
 
@@ -2155,10 +2211,12 @@ func (c *webClient) handleSend(w http.ResponseWriter, r *http.Request) {
 	}
 	encryptedBody, err := c.encryptDirectMessage(target, text)
 	if err != nil {
+		c.addSystemChatEvent("dm", target, "", "", err.Error())
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 	if err := c.sendSigned(Packet{Type: "send", To: target, Body: encryptedBody}); err != nil {
+		c.addSystemChatEvent("dm", target, "", "", "unable to send: "+err.Error())
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
@@ -2309,6 +2367,7 @@ func (c *webClient) handleGroupSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := c.sendSigned(Packet{Type: "channel_send", Group: group, Channel: channel, Body: text}); err != nil {
+		c.addSystemChatEvent("group", "", group, channel, "unable to send: "+err.Error())
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
