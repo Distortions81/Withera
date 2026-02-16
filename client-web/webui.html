@@ -395,7 +395,7 @@
         <h3 style="margin:0; flex:1;">Group Icon</h3>
         <button id="groupIconEditorClose" class="popup-close" title="Close" aria-label="Close">×</button>
       </div>
-      <div class="small" style="margin-bottom:8px;">Set icon for this group</div>
+      <div class="small" style="margin-bottom:8px;">Set icon and profile text for this group</div>
       <input id="groupIconInput" type="file" accept="image/*">
       <div class="row" style="align-items:center;">
         <div class="self-avatar" style="width:34px;height:34px;">
@@ -404,6 +404,7 @@
         </div>
         <button id="groupIconClear" type="button">Clear</button>
       </div>
+      <textarea id="groupProfileTextInput" rows="3" placeholder="group profile text"></textarea>
       <button id="groupIconSave">Save</button>
     </div>
     <div id="groupCreateEditor" class="panel group-create-editor" hidden>
@@ -421,6 +422,7 @@
         </div>
         <button id="groupCreateIconClear" type="button">Clear</button>
       </div>
+      <textarea id="groupCreateProfileText" rows="3" placeholder="group profile text (optional)"></textarea>
       <div class="friend-inline-row">
         <div style="flex:1;"></div>
         <button id="groupCreateSubmit" type="button">Create</button>
@@ -561,12 +563,14 @@ const groupIconPreview = document.getElementById('groupIconPreview');
 const groupIconPreviewIcon = document.getElementById('groupIconPreviewIcon');
 const groupIconClear = document.getElementById('groupIconClear');
 const groupIconSave = document.getElementById('groupIconSave');
+const groupProfileTextInput = document.getElementById('groupProfileTextInput');
 const groupCreateName = document.getElementById('groupCreateName');
 const groupCreateIconInput = document.getElementById('groupCreateIconInput');
 const groupCreateIconPreview = document.getElementById('groupCreateIconPreview');
 const groupCreateIconPreviewIcon = document.getElementById('groupCreateIconPreviewIcon');
 const groupCreateIconClear = document.getElementById('groupCreateIconClear');
 const groupCreateSubmit = document.getElementById('groupCreateSubmit');
+const groupCreateProfileText = document.getElementById('groupCreateProfileText');
 const footerUserIDBtn = document.getElementById('footerUserIDBtn');
 const footerUserIDBubble = document.getElementById('footerUserIDBubble');
 const footerSettingsBtn = document.getElementById('footerSettingsBtn');
@@ -608,6 +612,7 @@ let unreadGroupChannel = {};
 let footerCopyBubbleTimer = null;
 let groupIconDraft = '';
 let groupIconDirty = false;
+let groupProfileTextDraft = '';
 let groupCreateIconDraft = '';
 let chatShowProfileImages = true;
 let chatShowTime = true;
@@ -812,6 +817,10 @@ groupIconClear.onclick = () => {
   setAvatarImage(groupIconPreview, groupIconPreviewIcon, '');
 };
 
+groupProfileTextInput.addEventListener('input', () => {
+  groupIconDirty = true;
+});
+
 groupCreateIconInput.addEventListener('change', () => {
   const file = groupCreateIconInput.files && groupCreateIconInput.files[0];
   if (!file) return;
@@ -904,6 +913,7 @@ groupCreateRailBtn.onclick = () => {
   if (willShow) {
     groupCreateName.value = '';
     groupCreateIconDraft = '';
+    groupCreateProfileText.value = '';
     groupCreateIconInput.value = '';
     setAvatarImage(groupCreateIconPreview, groupCreateIconPreviewIcon, '');
     const r = groupCreateRailBtn.getBoundingClientRect();
@@ -926,9 +936,11 @@ groupIconBtn.onclick = () => {
   const canEdit = !!(current && (current.owned || ((current.owner_id || '') === selfLoginID)));
   if (!canEdit) return;
   groupIconDraft = (current.icon || '').trim();
+  groupProfileTextDraft = (current.profile_text || '').trim();
   groupIconDirty = false;
   groupIconInput.value = '';
   setAvatarImage(groupIconPreview, groupIconPreviewIcon, groupIconDraft);
+  groupProfileTextInput.value = groupProfileTextDraft;
   const willShow = groupIconEditor.hidden;
   groupIconEditor.hidden = !groupIconEditor.hidden;
   if (willShow) {
@@ -1011,17 +1023,25 @@ footerUserIDBtn.onclick = async () => {
 
 groupIconSave.onclick = async () => {
   if (!isGroupMode() || !activeGroup) return;
-  if (!groupIconDirty) {
+  const profileText = (groupProfileTextInput.value || '').trim();
+  if (!groupIconDirty && profileText === groupProfileTextDraft) {
     groupIconEditor.hidden = true;
     return;
   }
   try {
-    await post('/api/group/icon/set', {group: activeGroup, icon: groupIconDraft || ''});
+    await post('/api/group/profile/set', {
+      group: activeGroup,
+      icon: groupIconDraft || '',
+      icon_set: true,
+      profile_text: profileText,
+      text_set: true
+    });
+    groupProfileTextDraft = profileText;
     groupIconDirty = false;
     groupIconEditor.hidden = true;
     await poll();
   } catch (e) {
-    appendInfo(`group icon save failed: ${e.message}`);
+    appendInfo(`group profile save failed: ${e.message}`);
   }
 };
 
@@ -1620,6 +1640,7 @@ async function createGroupFromPanel() {
   }
   try {
     const iconDraft = groupCreateIconDraft;
+    const profileTextDraft = (groupCreateProfileText.value || '').trim();
     const created = await post('/api/group/create', {group, channel: 'default', public: true});
     const createdGroup = ((created && created.group) || group).trim();
     const createdChannel = (((created && created.channel) || 'default').trim() || 'default');
@@ -1627,6 +1648,7 @@ async function createGroupFromPanel() {
     groupCreateEditor.hidden = true;
     groupCreateName.value = '';
     groupCreateIconDraft = '';
+    groupCreateProfileText.value = '';
     groupCreateIconInput.value = '';
     setAvatarImage(groupCreateIconPreview, groupCreateIconPreviewIcon, '');
 
@@ -1640,20 +1662,28 @@ async function createGroupFromPanel() {
       foundGroup = true;
       if (!Array.isArray(g.channels)) g.channels = [];
       if (!g.channels.includes(createdChannel)) g.channels.push(createdChannel);
+      g.icon = iconDraft || '';
+      g.profile_text = profileTextDraft || '';
       break;
     }
     if (!foundGroup) {
-      latestGroups.push({name: createdGroup, channels: [createdChannel], owned: true});
+      latestGroups.push({name: createdGroup, channels: [createdChannel], owned: true, profile_text: profileTextDraft, icon: iconDraft || ''});
     }
     renderGroups(latestGroups);
     updateChatContext();
     persistContextSoon();
     try {
-      if (iconDraft) {
-        await post('/api/group/icon/set', {group: createdGroup, icon: iconDraft});
+      if (iconDraft || profileTextDraft) {
+        await post('/api/group/profile/set', {
+          group: createdGroup,
+          icon: iconDraft || '',
+          icon_set: true,
+          profile_text: profileTextDraft,
+          text_set: true
+        });
       }
     } catch (e) {
-      appendInfo(`group-icon failed: ${e.message}`);
+      appendInfo(`group-profile failed: ${e.message}`);
     }
     await poll();
   } catch (e) {
@@ -1932,8 +1962,11 @@ function resetUIForSetup() {
   pendingInviteKeys = {};
   groupIconDraft = '';
   groupIconDirty = false;
+  groupProfileTextDraft = '';
+  groupProfileTextInput.value = '';
   groupCreateIconDraft = '';
   groupCreateName.value = '';
+  groupCreateProfileText.value = '';
   groupCreateIconInput.value = '';
   setAvatarImage(groupCreateIconPreview, groupCreateIconPreviewIcon, '');
   if (pollTimer) {

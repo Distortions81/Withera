@@ -217,6 +217,7 @@ func main() {
 		s.loadPersistedFriendEdges()
 		s.loadPersistedChannelsAndMemberships()
 		s.loadPersistedProfiles()
+		s.loadPersistedGroupProfiles()
 		defer func() {
 			if err := store.Close(); err != nil {
 				log.Printf("sqlite close error: %v", err)

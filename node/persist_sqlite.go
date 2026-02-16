@@ -25,9 +25,9 @@ type storedMessage struct {
 }
 
 type sqliteStore struct {
-	db             *sql.DB
-	maxPendingUser int
-	maxFriendsUser int
+	db              *sql.DB
+	maxPendingUser  int
+	maxFriendsUser  int
 	maxChannelsUser int
 }
 
@@ -164,6 +164,13 @@ func (s *sqliteStore) initSchema(serverID string, ownerID string) error {
 			updated_at INTEGER NOT NULL
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_profile_cache_updated ON profile_cache(updated_at);`,
+		`CREATE TABLE IF NOT EXISTS group_profile_cache (
+			group_name TEXT PRIMARY KEY,
+			profile_text TEXT NOT NULL,
+			profile_image TEXT NOT NULL,
+			updated_at INTEGER NOT NULL
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_group_profile_cache_updated ON group_profile_cache(updated_at);`,
 	}
 	for _, stmt := range schema {
 		if _, err := s.db.Exec(stmt); err != nil {
@@ -495,6 +502,12 @@ type persistedProfileCacheEntry struct {
 	UpdatedAt int64
 }
 
+type persistedGroupProfileCacheEntry struct {
+	Group     string
+	Payload   groupProfilePayload
+	UpdatedAt int64
+}
+
 func (s *sqliteStore) rememberProfileCache(loginID string, payload profilePayload) error {
 	loginID = strings.TrimSpace(loginID)
 	if loginID == "" {
@@ -545,6 +558,65 @@ func (s *sqliteStore) loadProfileCache(maxAge time.Duration) ([]persistedProfile
 		e.Payload.ProfileText = strings.TrimSpace(e.Payload.ProfileText)
 		e.Payload.ProfileImage = strings.TrimSpace(e.Payload.ProfileImage)
 		if e.LoginID == "" {
+			continue
+		}
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (s *sqliteStore) rememberGroupProfileCache(group string, payload groupProfilePayload) error {
+	group = strings.TrimSpace(group)
+	if group == "" {
+		return nil
+	}
+	now := time.Now().Unix()
+	_, err := s.db.Exec(`
+		INSERT INTO group_profile_cache(group_name, profile_text, profile_image, updated_at)
+		VALUES(?, ?, ?, ?)
+		ON CONFLICT(group_name) DO UPDATE SET
+			profile_text = excluded.profile_text,
+			profile_image = excluded.profile_image,
+			updated_at = excluded.updated_at
+	`, group, payload.ProfileText, payload.ProfileImage, now)
+	return err
+}
+
+func (s *sqliteStore) loadGroupProfileCache(maxAge time.Duration) ([]persistedGroupProfileCacheEntry, error) {
+	cutoff := int64(0)
+	if maxAge > 0 {
+		cutoff = time.Now().Add(-maxAge).Unix()
+	}
+	if cutoff > 0 {
+		if _, err := s.db.Exec(`DELETE FROM group_profile_cache WHERE updated_at < ?`, cutoff); err != nil {
+			return nil, err
+		}
+	}
+
+	rows, err := s.db.Query(`
+		SELECT group_name, profile_text, profile_image, updated_at
+		FROM group_profile_cache
+		ORDER BY updated_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]persistedGroupProfileCacheEntry, 0)
+	for rows.Next() {
+		var e persistedGroupProfileCacheEntry
+		if err := rows.Scan(&e.Group, &e.Payload.ProfileText, &e.Payload.ProfileImage, &e.UpdatedAt); err != nil {
+			return nil, err
+		}
+		e.Group = strings.TrimSpace(e.Group)
+		e.Payload.Group = e.Group
+		e.Payload.ProfileText = strings.TrimSpace(e.Payload.ProfileText)
+		e.Payload.ProfileImage = strings.TrimSpace(e.Payload.ProfileImage)
+		if e.Group == "" {
 			continue
 		}
 		out = append(out, e)

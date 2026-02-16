@@ -117,9 +117,11 @@ type chatContext struct {
 }
 
 type uiStateFile struct {
-	Groups      []groupEntry      `json:"groups,omitempty"`
-	LastContext chatContext       `json:"last_context,omitempty"`
-	GroupIcons  map[string]string `json:"group_icons,omitempty"`
+	Groups              []groupEntry      `json:"groups,omitempty"`
+	LastContext         chatContext       `json:"last_context,omitempty"`
+	GroupIcons          map[string]string `json:"group_icons,omitempty"`
+	GroupProfileTexts   map[string]string `json:"group_profile_texts,omitempty"`
+	GroupProfileRefresh map[string]int64  `json:"group_profile_refreshed,omitempty"`
 }
 
 type savedNickname struct {
@@ -137,6 +139,12 @@ type savedProfile struct {
 
 type profilePayload struct {
 	Nickname     string `json:"nickname,omitempty"`
+	ProfileText  string `json:"profile_text,omitempty"`
+	ProfileImage string `json:"profile_image,omitempty"`
+}
+
+type groupProfilePayload struct {
+	Group        string `json:"group"`
 	ProfileText  string `json:"profile_text,omitempty"`
 	ProfileImage string `json:"profile_image,omitempty"`
 }
@@ -276,6 +284,8 @@ type groupEntry struct {
 	OwnerUserID string   `json:"owner_user_id,omitempty"`
 	OwnerLabel  string   `json:"owner_label,omitempty"`
 	Icon        string   `json:"icon,omitempty"`
+	ProfileText string   `json:"profile_text,omitempty"`
+	UpdatedAt   int64    `json:"updated_at,omitempty"`
 }
 
 type webClient struct {
@@ -298,30 +308,33 @@ type webClient struct {
 	e2eePath      string
 	e2eeStatePath string
 
-	contacts           map[string]string
-	nicknames          map[string]string
-	peerProfiles       map[string]string
-	peerProfileImages  map[string]string
-	peerImageChecksums map[string]string
-	profileRefreshed   map[string]int64
-	profileRequested   map[string]int64
-	presence           map[string]string
-	presenceTTL        map[string]int
-	presenceVisible    bool
-	presenceTTLSec     int
-	friends            map[string]struct{}
-	pendingFriends     map[string]int64
-	pendingInvites     map[string]channelInviteEntry
-	groups             map[string]map[string]struct{}
-	ownedGroups        map[string]struct{}
-	groupOwners        map[string]string
-	groupIcons         map[string]string
-	lastContext        chatContext
-	pendingPings       map[string]int64
-	seenChatIDs        map[string]struct{}
-	peerE2EEMulti      map[string][]string
-	friendKeyNonces    map[string]map[string]int64
-	e2eeIssues         map[string]string
+	contacts              map[string]string
+	nicknames             map[string]string
+	peerProfiles          map[string]string
+	peerProfileImages     map[string]string
+	peerImageChecksums    map[string]string
+	profileRefreshed      map[string]int64
+	profileRequested      map[string]int64
+	presence              map[string]string
+	presenceTTL           map[string]int
+	presenceVisible       bool
+	presenceTTLSec        int
+	friends               map[string]struct{}
+	pendingFriends        map[string]int64
+	pendingInvites        map[string]channelInviteEntry
+	groups                map[string]map[string]struct{}
+	ownedGroups           map[string]struct{}
+	groupOwners           map[string]string
+	groupIcons            map[string]string
+	groupProfileTexts     map[string]string
+	groupProfileRefreshed map[string]int64
+	groupProfileRequested map[string]int64
+	lastContext           chatContext
+	pendingPings          map[string]int64
+	seenChatIDs           map[string]struct{}
+	peerE2EEMulti         map[string][]string
+	friendKeyNonces       map[string]map[string]int64
+	e2eeIssues            map[string]string
 
 	events  []webEvent
 	nextSeq int64
@@ -349,6 +362,7 @@ const (
 	publicInviteCodeVersion   = 1
 	profileRefreshTTL         = 6 * time.Hour
 	profileRequestMinInterval = 30 * time.Second
+	groupProfileTextMaxRunes  = 2048
 )
 
 func stamp() string { return time.Now().Format("15:04:05") }
@@ -366,7 +380,7 @@ func reconnectBackoff(attempt int) time.Duration {
 	}
 	// 1s, 2s, 4s, 8s, 16s, 32s (capped) + up to 500ms jitter.
 	base := time.Second * time.Duration(1<<minInt(attempt-1, 5))
-	jitter := time.Duration(time.Now().UnixNano()%int64(500*time.Millisecond))
+	jitter := time.Duration(time.Now().UnixNano() % int64(500*time.Millisecond))
 	return base + jitter
 }
 
@@ -635,6 +649,50 @@ func (c *webClient) maybeRequestProfile(target string) {
 	c.profileRequested[target] = nowSec
 	c.mu.Unlock()
 	c.requestProfile(target)
+}
+
+func limitRunes(v string, max int) string {
+	v = strings.TrimSpace(v)
+	if max <= 0 {
+		return ""
+	}
+	r := []rune(v)
+	if len(r) <= max {
+		return v
+	}
+	return strings.TrimSpace(string(r[:max]))
+}
+
+func (c *webClient) requestGroupProfile(group string) {
+	group = normalizeGroupName(group)
+	if group == "" {
+		return
+	}
+	_ = c.sendSigned(Packet{Type: "group_profile_get", Group: group})
+}
+
+func (c *webClient) maybeRequestGroupProfile(group string) {
+	group = normalizeGroupName(group)
+	if group == "" {
+		return
+	}
+	now := time.Now()
+	nowSec := now.Unix()
+	nowUnix := now.Unix()
+	c.mu.Lock()
+	lastReq := c.groupProfileRequested[group]
+	lastRefresh := c.groupProfileRefreshed[group]
+	if lastReq > 0 && nowUnix-lastReq < int64(profileRequestMinInterval/time.Second) {
+		c.mu.Unlock()
+		return
+	}
+	if lastRefresh > 0 && now.Sub(time.Unix(lastRefresh, 0)) < profileRefreshTTL {
+		c.mu.Unlock()
+		return
+	}
+	c.groupProfileRequested[group] = nowSec
+	c.mu.Unlock()
+	c.requestGroupProfile(group)
 }
 
 func (c *webClient) knownPeerIDsLocked() []string {
@@ -1011,6 +1069,60 @@ func (c *webClient) applyOwnProfileFromServer(payload profilePayload) {
 	_ = saveProfile(c.profilePath, displayName, text, image, true, nickCopy, peerCopy, peerImgCopy, peerSumCopy, refCopy)
 }
 
+func (c *webClient) applyGroupProfileFromServer(payload groupProfilePayload) {
+	group := normalizeGroupName(payload.Group)
+	if group == "" {
+		return
+	}
+	text := limitRunes(payload.ProfileText, groupProfileTextMaxRunes)
+	image, err := sanitizeGroupIconDataURL(payload.ProfileImage)
+	if err != nil {
+		image = ""
+	}
+	now := time.Now().Unix()
+
+	c.mu.Lock()
+	if c.groupIcons == nil {
+		c.groupIcons = make(map[string]string)
+	}
+	if c.groupProfileTexts == nil {
+		c.groupProfileTexts = make(map[string]string)
+	}
+	if c.groupProfileRefreshed == nil {
+		c.groupProfileRefreshed = make(map[string]int64)
+	}
+	if image == "" {
+		delete(c.groupIcons, group)
+	} else {
+		c.groupIcons[group] = image
+	}
+	if text == "" {
+		delete(c.groupProfileTexts, group)
+	} else {
+		c.groupProfileTexts[group] = text
+	}
+	c.groupProfileRefreshed[group] = now
+	delete(c.groupProfileRequested, group)
+	c.mu.Unlock()
+	c.persistUIState()
+}
+
+func (c *webClient) publishGroupProfile(group string, text string, icon string) error {
+	group = normalizeGroupName(group)
+	if group == "" {
+		return fmt.Errorf("group required")
+	}
+	body, err := json.Marshal(groupProfilePayload{
+		Group:        group,
+		ProfileText:  limitRunes(text, groupProfileTextMaxRunes),
+		ProfileImage: strings.TrimSpace(icon),
+	})
+	if err != nil {
+		return err
+	}
+	return c.sendSigned(Packet{Type: "group_profile_set", Group: group, Body: string(body)})
+}
+
 func (c *webClient) rememberGroup(group string, channel string) {
 	group = strings.TrimSpace(group)
 	channel = strings.TrimSpace(channel)
@@ -1026,6 +1138,7 @@ func (c *webClient) rememberGroup(group string, channel string) {
 	}
 	c.mu.Unlock()
 	c.persistUIState()
+	c.maybeRequestGroupProfile(group)
 }
 
 func (c *webClient) forgetGroup(group string) {
@@ -1038,6 +1151,9 @@ func (c *webClient) forgetGroup(group string) {
 	delete(c.ownedGroups, group)
 	delete(c.groupOwners, group)
 	delete(c.groupIcons, group)
+	delete(c.groupProfileTexts, group)
+	delete(c.groupProfileRefreshed, group)
+	delete(c.groupProfileRequested, group)
 	c.mu.Unlock()
 	c.persistUIState()
 }
@@ -1061,6 +1177,9 @@ func (c *webClient) forgetGroupChannel(group string, channel string) bool {
 			delete(c.ownedGroups, group)
 			delete(c.groupOwners, group)
 			delete(c.groupIcons, group)
+			delete(c.groupProfileTexts, group)
+			delete(c.groupProfileRefreshed, group)
+			delete(c.groupProfileRequested, group)
 			changed = true
 		}
 	}
@@ -1274,6 +1393,7 @@ func (c *webClient) networkLoop(ch <-chan netMsg) {
 				if p.Type != "group_invite" {
 					c.rememberGroup(p.Group, p.Channel)
 				}
+				c.maybeRequestGroupProfile(p.Group)
 				if looksLikeLoginID(p.From) {
 					c.mu.Lock()
 					if _, ok := c.groupOwners[strings.TrimSpace(p.Group)]; !ok || p.Type == "channel_update" {
@@ -1413,6 +1533,24 @@ func (c *webClient) networkLoop(ch <-chan netMsg) {
 				line += " bio=" + text
 			}
 			c.addEventWithActor("info", line, p.From)
+		case "group_profile_data":
+			decoded, err := decodeTextBodyForClient(p)
+			if err != nil {
+				c.addEvent("info", "group profile decode failed: "+err.Error())
+				continue
+			}
+			var gp groupProfilePayload
+			if err := json.Unmarshal([]byte(decoded), &gp); err != nil {
+				c.addEvent("info", "group profile parse failed")
+				continue
+			}
+			if strings.TrimSpace(gp.Group) == "" {
+				gp.Group = normalizeGroupName(p.Group)
+			}
+			c.applyGroupProfileFromServer(gp)
+			if g := normalizeGroupName(gp.Group); g != "" {
+				c.addEvent("info", "group profile synced: "+g)
+			}
 		case "presence_data":
 			var pd presenceDataPayload
 			if err := json.Unmarshal([]byte(strings.TrimSpace(p.Body)), &pd); err == nil {
@@ -1485,6 +1623,10 @@ func (c *webClient) reconnectLoop() {
 		c.pubB64 = pubB64
 		c.reconnecting = false
 		peers := c.knownPeerIDsLocked()
+		groups := make([]string, 0, len(c.groups))
+		for group := range c.groups {
+			groups = append(groups, group)
+		}
 		c.mu.Unlock()
 		if oldConn != nil && oldConn != conn {
 			_ = oldConn.Close()
@@ -1498,6 +1640,9 @@ func (c *webClient) reconnectLoop() {
 		for _, id := range peers {
 			c.requestProfile(id)
 			c.requestPresence(id)
+		}
+		for _, group := range groups {
+			c.requestGroupProfile(group)
 		}
 		return
 	}
@@ -1698,6 +1843,8 @@ func (c *webClient) groupsList() []groupEntry {
 			OwnerUserID: ownerUserID,
 			OwnerLabel:  ownerLabel,
 			Icon:        strings.TrimSpace(c.groupIcons[g]),
+			ProfileText: strings.TrimSpace(c.groupProfileTexts[g]),
+			UpdatedAt:   c.groupProfileRefreshed[g],
 		})
 	}
 	return out
@@ -1709,8 +1856,10 @@ func (c *webClient) persistUIState() {
 	ctx := c.lastContext
 	path := c.uiStatePath
 	icons := cloneStringMap(c.groupIcons)
+	texts := cloneStringMap(c.groupProfileTexts)
+	refresh := cloneInt64Map(c.groupProfileRefreshed)
 	c.mu.Unlock()
-	_ = saveUIState(path, groups, ctx, icons)
+	_ = saveUIState(path, groups, ctx, icons, texts, refresh)
 }
 
 func (c *webClient) setLastContext(ctx chatContext) {
@@ -1740,10 +1889,13 @@ func (c *webClient) handleContextSet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-func (c *webClient) handleGroupIconSet(w http.ResponseWriter, r *http.Request) {
+func (c *webClient) handleGroupProfileSet(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Group string `json:"group"`
-		Icon  string `json:"icon"`
+		Group       string `json:"group"`
+		Icon        string `json:"icon"`
+		IconSet     bool   `json:"icon_set"`
+		ProfileText string `json:"profile_text"`
+		TextSet     bool   `json:"text_set"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
@@ -1759,6 +1911,7 @@ func (c *webClient) handleGroupIconSet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	text := limitRunes(req.ProfileText, groupProfileTextMaxRunes)
 	c.mu.Lock()
 	if _, ok := c.ownedGroups[group]; !ok {
 		c.mu.Unlock()
@@ -1773,14 +1926,59 @@ func (c *webClient) handleGroupIconSet(w http.ResponseWriter, r *http.Request) {
 	if c.groupIcons == nil {
 		c.groupIcons = make(map[string]string)
 	}
-	if icon == "" {
-		delete(c.groupIcons, group)
-	} else {
-		c.groupIcons[group] = icon
+	if c.groupProfileTexts == nil {
+		c.groupProfileTexts = make(map[string]string)
+	}
+	curIcon := strings.TrimSpace(c.groupIcons[group])
+	curText := strings.TrimSpace(c.groupProfileTexts[group])
+	if req.IconSet {
+		curIcon = icon
+	}
+	if req.TextSet {
+		curText = text
 	}
 	c.mu.Unlock()
+
+	if err := c.publishGroupProfile(group, curText, curIcon); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	c.applyGroupProfileFromServer(groupProfilePayload{
+		Group:        group,
+		ProfileText:  curText,
+		ProfileImage: curIcon,
+	})
 	c.persistUIState()
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (c *webClient) handleGroupIconSet(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Group string `json:"group"`
+		Icon  string `json:"icon"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+	icon, err := sanitizeGroupIconDataURL(req.Icon)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	c.mu.Lock()
+	text := strings.TrimSpace(c.groupProfileTexts[normalizeGroupName(req.Group)])
+	c.mu.Unlock()
+	reqBody, _ := json.Marshal(map[string]any{
+		"group":        req.Group,
+		"icon":         icon,
+		"icon_set":     true,
+		"profile_text": text,
+		"text_set":     true,
+	})
+	r.Body = io.NopCloser(bytes.NewReader(reqBody))
+	r.ContentLength = int64(len(reqBody))
+	c.handleGroupProfileSet(w, r)
 }
 
 func (c *webClient) profileCard(loginID string) dmTarget {
@@ -2679,23 +2877,23 @@ func writeContactsAtomic(path string, contacts map[string]string) error {
 	return writeFileAtomic(path, payload, 0o600)
 }
 
-func loadUIState(path string) ([]groupEntry, chatContext, map[string]string, error) {
+func loadUIState(path string) ([]groupEntry, chatContext, map[string]string, map[string]string, map[string]int64, error) {
 	if strings.TrimSpace(path) == "" {
-		return nil, chatContext{}, nil, nil
+		return nil, chatContext{}, nil, nil, nil, nil
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, chatContext{}, nil, nil
+			return nil, chatContext{}, nil, nil, nil, nil
 		}
-		return nil, chatContext{}, nil, err
+		return nil, chatContext{}, nil, nil, nil, err
 	}
 	if isBlankJSONFile(data) {
-		return nil, chatContext{}, nil, nil
+		return nil, chatContext{}, nil, nil, nil, nil
 	}
 	var f uiStateFile
 	if err := json.Unmarshal(data, &f); err != nil {
-		return nil, chatContext{}, nil, err
+		return nil, chatContext{}, nil, nil, nil, err
 	}
 	icons := make(map[string]string, len(f.GroupIcons))
 	for g, icon := range f.GroupIcons {
@@ -2706,10 +2904,27 @@ func loadUIState(path string) ([]groupEntry, chatContext, map[string]string, err
 		}
 		icons[g] = icon
 	}
-	return f.Groups, f.LastContext, icons, nil
+	texts := make(map[string]string, len(f.GroupProfileTexts))
+	for g, text := range f.GroupProfileTexts {
+		g = normalizeGroupName(g)
+		text = limitRunes(text, groupProfileTextMaxRunes)
+		if g == "" || text == "" {
+			continue
+		}
+		texts[g] = text
+	}
+	refreshed := make(map[string]int64, len(f.GroupProfileRefresh))
+	for g, ts := range f.GroupProfileRefresh {
+		g = normalizeGroupName(g)
+		if g == "" || ts <= 0 {
+			continue
+		}
+		refreshed[g] = ts
+	}
+	return f.Groups, f.LastContext, icons, texts, refreshed, nil
 }
 
-func saveUIState(path string, groups []groupEntry, ctx chatContext, groupIcons map[string]string) error {
+func saveUIState(path string, groups []groupEntry, ctx chatContext, groupIcons map[string]string, groupTexts map[string]string, refreshed map[string]int64) error {
 	if strings.TrimSpace(path) == "" {
 		return nil
 	}
@@ -2722,7 +2937,30 @@ func saveUIState(path string, groups []groupEntry, ctx chatContext, groupIcons m
 		}
 		icons[g] = icon
 	}
-	f := uiStateFile{Groups: groups, LastContext: ctx, GroupIcons: icons}
+	texts := make(map[string]string, len(groupTexts))
+	for g, text := range groupTexts {
+		g = normalizeGroupName(g)
+		text = limitRunes(text, groupProfileTextMaxRunes)
+		if g == "" || text == "" {
+			continue
+		}
+		texts[g] = text
+	}
+	groupRefresh := make(map[string]int64, len(refreshed))
+	for g, ts := range refreshed {
+		g = normalizeGroupName(g)
+		if g == "" || ts <= 0 {
+			continue
+		}
+		groupRefresh[g] = ts
+	}
+	f := uiStateFile{
+		Groups:              groups,
+		LastContext:         ctx,
+		GroupIcons:          icons,
+		GroupProfileTexts:   texts,
+		GroupProfileRefresh: groupRefresh,
+	}
 	payload, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		return err
@@ -3636,7 +3874,7 @@ func newWebClientForIdentity(serverAddr string, home string, keyPath string, con
 		return nil, fmt.Errorf("profile load failed: %w", err)
 	}
 	uiStatePath := uiStatePathForProfile(profilePath)
-	savedGroups, savedCtx, savedGroupIcons, err := loadUIState(uiStatePath)
+	savedGroups, savedCtx, savedGroupIcons, savedGroupTexts, savedGroupRefreshed, err := loadUIState(uiStatePath)
 	if err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("ui state load failed: %w", err)
@@ -3650,47 +3888,50 @@ func newWebClientForIdentity(serverAddr string, home string, keyPath string, con
 	}
 
 	client := &webClient{
-		enc:                enc,
-		conn:               conn,
-		priv:               priv,
-		pubB64:             pubB64,
-		e2ee:               e2eePriv,
-		e2eeB64:            e2eePubB64,
-		loginID:            loginID,
-		displayName:        displayName,
-		profileText:        profileText,
-		profileImage:       profileImage,
-		contactsPath:       contactsPath,
-		profilePath:        profilePath,
-		uiStatePath:        uiStatePath,
-		e2eePath:           e2eePath,
-		e2eeStatePath:      e2eeStatePath,
-		contacts:           contacts,
-		nicknames:          nicknames,
-		peerProfiles:       peerProfiles,
-		peerProfileImages:  peerProfileImages,
-		peerImageChecksums: peerImageChecksums,
-		profileRefreshed:   profileRefreshed,
-		profileRequested:   make(map[string]int64),
-		presence:           make(map[string]string),
-		presenceTTL:        make(map[string]int),
-		presenceVisible:    true,
-		presenceTTLSec:     defaultPresenceTTLSec,
-		friends:            make(map[string]struct{}),
-		pendingFriends:     make(map[string]int64),
-		pendingInvites:     make(map[string]channelInviteEntry),
-		groups:             make(map[string]map[string]struct{}),
-		ownedGroups:        make(map[string]struct{}),
-		groupOwners:        make(map[string]string),
-		groupIcons:         make(map[string]string),
-		lastContext:        savedCtx,
-		pendingPings:       make(map[string]int64),
-		seenChatIDs:        make(map[string]struct{}),
-		peerE2EEMulti:      peerE2EEMulti,
-		friendKeyNonces:    friendKeyNonces,
-		e2eeIssues:         make(map[string]string),
-		serverAddr:         serverAddr,
-		stopCh:             make(chan struct{}),
+		enc:                   enc,
+		conn:                  conn,
+		priv:                  priv,
+		pubB64:                pubB64,
+		e2ee:                  e2eePriv,
+		e2eeB64:               e2eePubB64,
+		loginID:               loginID,
+		displayName:           displayName,
+		profileText:           profileText,
+		profileImage:          profileImage,
+		contactsPath:          contactsPath,
+		profilePath:           profilePath,
+		uiStatePath:           uiStatePath,
+		e2eePath:              e2eePath,
+		e2eeStatePath:         e2eeStatePath,
+		contacts:              contacts,
+		nicknames:             nicknames,
+		peerProfiles:          peerProfiles,
+		peerProfileImages:     peerProfileImages,
+		peerImageChecksums:    peerImageChecksums,
+		profileRefreshed:      profileRefreshed,
+		profileRequested:      make(map[string]int64),
+		presence:              make(map[string]string),
+		presenceTTL:           make(map[string]int),
+		presenceVisible:       true,
+		presenceTTLSec:        defaultPresenceTTLSec,
+		friends:               make(map[string]struct{}),
+		pendingFriends:        make(map[string]int64),
+		pendingInvites:        make(map[string]channelInviteEntry),
+		groups:                make(map[string]map[string]struct{}),
+		ownedGroups:           make(map[string]struct{}),
+		groupOwners:           make(map[string]string),
+		groupIcons:            make(map[string]string),
+		groupProfileTexts:     make(map[string]string),
+		groupProfileRefreshed: make(map[string]int64),
+		groupProfileRequested: make(map[string]int64),
+		lastContext:           savedCtx,
+		pendingPings:          make(map[string]int64),
+		seenChatIDs:           make(map[string]struct{}),
+		peerE2EEMulti:         peerE2EEMulti,
+		friendKeyNonces:       friendKeyNonces,
+		e2eeIssues:            make(map[string]string),
+		serverAddr:            serverAddr,
+		stopCh:                make(chan struct{}),
 	}
 	for _, g := range savedGroups {
 		group := strings.TrimSpace(g.Name)
@@ -3723,6 +3964,20 @@ func newWebClientForIdentity(serverAddr string, home string, keyPath string, con
 		}
 		client.groupIcons[group] = strings.TrimSpace(icon)
 	}
+	for group, text := range savedGroupTexts {
+		group = normalizeGroupName(group)
+		if group == "" {
+			continue
+		}
+		client.groupProfileTexts[group] = limitRunes(text, groupProfileTextMaxRunes)
+	}
+	for group, ts := range savedGroupRefreshed {
+		group = normalizeGroupName(group)
+		if group == "" || ts <= 0 {
+			continue
+		}
+		client.groupProfileRefreshed[group] = ts
+	}
 
 	client.addEvent("info", "connected to node "+serverAddr)
 	client.addEvent("info", "login_id: "+loginID)
@@ -3734,6 +3989,9 @@ func newWebClientForIdentity(serverAddr string, home string, keyPath string, con
 	for _, id := range client.knownPeerIDs() {
 		client.requestProfile(id)
 		client.requestPresence(id)
+	}
+	for group := range client.groups {
+		client.maybeRequestGroupProfile(group)
 	}
 
 	go client.networkLoop(events)
@@ -4080,6 +4338,7 @@ func main() {
 	mux.HandleFunc("/api/group/public_code", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleGroupPublicCode(w, r) }))
 	mux.HandleFunc("/api/group/join_code", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleGroupJoinCode(w, r) }))
 	mux.HandleFunc("/api/group/icon/set", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleGroupIconSet(w, r) }))
+	mux.HandleFunc("/api/group/profile/set", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleGroupProfileSet(w, r) }))
 	mux.HandleFunc("/api/context/set", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleContextSet(w, r) }))
 	mux.HandleFunc("/api/ping", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handlePing(w, r) }))
 	mux.HandleFunc("/api/friend/add", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleFriendAdd(w, r) }))

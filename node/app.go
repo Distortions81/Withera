@@ -30,35 +30,37 @@ import (
 )
 
 const (
-	defaultMaxMessageBytes      = 32 * 1024
-	defaultMaxUncompressedBytes = 64 * 1024
-	defaultMaxExpandRatio       = 64
-	defaultMaxMsgsPerSec        = 50
-	defaultBurstMessages        = 100
-	defaultMaxSeenEntries       = 20000
-	defaultMaxKnownAddrs        = 5000
-	defaultKnownAddrTTL         = 30 * time.Minute
-	defaultPeerBanScore         = 20
-	defaultPeerBanFor           = 10 * time.Minute
-	clientModeDisabled          = "disabled"
-	clientModePublic            = "public"
-	clientModePrivate           = "private"
-	persistenceModeLive         = "live"
-	persistenceModePersist      = "persist"
-	compressionNone             = "none"
-	compressionZlib             = "zlib"
-	minPresenceTTLSec           = 180
-	maxPresenceTTLSec           = 900
-	routeEntryTTL               = 10 * time.Minute
-	defaultMaxChannelsPerGroup  = 64
-	defaultMaxGroupNameRunes    = 64
-	defaultMaxChannelNameRunes  = 48
-	defaultMaxPersistedFriends  = 256
+	defaultMaxMessageBytes             = 32 * 1024
+	defaultMaxUncompressedBytes        = 64 * 1024
+	defaultMaxExpandRatio              = 64
+	defaultMaxMsgsPerSec               = 50
+	defaultBurstMessages               = 100
+	defaultMaxSeenEntries              = 20000
+	defaultMaxKnownAddrs               = 5000
+	defaultKnownAddrTTL                = 30 * time.Minute
+	defaultPeerBanScore                = 20
+	defaultPeerBanFor                  = 10 * time.Minute
+	clientModeDisabled                 = "disabled"
+	clientModePublic                   = "public"
+	clientModePrivate                  = "private"
+	persistenceModeLive                = "live"
+	persistenceModePersist             = "persist"
+	compressionNone                    = "none"
+	compressionZlib                    = "zlib"
+	minPresenceTTLSec                  = 180
+	maxPresenceTTLSec                  = 900
+	routeEntryTTL                      = 10 * time.Minute
+	defaultMaxChannelsPerGroup         = 64
+	defaultMaxGroupNameRunes           = 64
+	defaultMaxChannelNameRunes         = 48
+	defaultMaxPersistedFriends         = 256
 	defaultMaxPersistedChannelsPerUser = 512
-	defaultProfileCacheTTL      = 90 * 24 * time.Hour
-	maxProfileNicknameRunes     = 64
-	maxProfileTextRunes         = 2048
-	maxProfileImageBytes        = 16 * 1024
+	defaultProfileCacheTTL             = 90 * 24 * time.Hour
+	maxProfileNicknameRunes            = 64
+	maxProfileTextRunes                = 2048
+	maxProfileImageBytes               = 16 * 1024
+	maxGroupProfileTextRunes           = 2048
+	maxGroupProfileImageBytes          = 16 * 1024
 )
 
 type Packet struct {
@@ -94,6 +96,12 @@ type hopRef struct {
 
 type profilePayload struct {
 	Nickname     string `json:"nickname,omitempty"`
+	ProfileText  string `json:"profile_text,omitempty"`
+	ProfileImage string `json:"profile_image,omitempty"`
+}
+
+type groupProfilePayload struct {
+	Group        string `json:"group"`
 	ProfileText  string `json:"profile_text,omitempty"`
 	ProfileImage string `json:"profile_image,omitempty"`
 }
@@ -230,24 +238,26 @@ type Server struct {
 	maxChannelNameRunes   int
 	store                 *sqliteStore
 
-	mu           sync.RWMutex
-	users        map[string]map[*Conn]struct{}
-	peers        map[string]*Peer
-	seen         map[string]time.Time
-	knownAddrs   map[string]time.Time
-	dialing      map[string]struct{}
-	peerScore    map[string]int
-	peerBanned   map[string]time.Time
-	peerBanScore int
-	peerBanFor   time.Duration
-	friends      map[string]map[string]struct{}
-	friendAdds   map[string]map[string]struct{}
-	channels     map[string]*ChannelState
-	profiles     map[string]profilePayload
-	profileUpdated map[string]int64
-	presence     map[string]presenceState
-	routes       map[string]userRoute
-	startedAt    time.Time
+	mu                  sync.RWMutex
+	users               map[string]map[*Conn]struct{}
+	peers               map[string]*Peer
+	seen                map[string]time.Time
+	knownAddrs          map[string]time.Time
+	dialing             map[string]struct{}
+	peerScore           map[string]int
+	peerBanned          map[string]time.Time
+	peerBanScore        int
+	peerBanFor          time.Duration
+	friends             map[string]map[string]struct{}
+	friendAdds          map[string]map[string]struct{}
+	channels            map[string]*ChannelState
+	profiles            map[string]profilePayload
+	profileUpdated      map[string]int64
+	groupProfiles       map[string]groupProfilePayload
+	groupProfileUpdated map[string]int64
+	presence            map[string]presenceState
+	routes              map[string]userRoute
+	startedAt           time.Time
 
 	counter atomic.Uint64
 }
@@ -311,6 +321,8 @@ func NewServer(id, ownerPubKeyB64 string, ownerPriv ed25519.PrivateKey, advertis
 		channels:              make(map[string]*ChannelState),
 		profiles:              make(map[string]profilePayload),
 		profileUpdated:        make(map[string]int64),
+		groupProfiles:         make(map[string]groupProfilePayload),
+		groupProfileUpdated:   make(map[string]int64),
 		presence:              make(map[string]presenceState),
 		routes:                make(map[string]userRoute),
 		startedAt:             time.Now(),
@@ -581,7 +593,7 @@ func normalizedCompression(v string) string {
 
 func actionRequiresBody(typ string) bool {
 	switch typ {
-	case "send", "channel_send", "profile_set", "presence_keepalive":
+	case "send", "channel_send", "profile_set", "group_profile_set", "presence_keepalive":
 		return true
 	default:
 		return false
@@ -1171,7 +1183,7 @@ func (s *Server) isUserOnline(loginID string) bool {
 
 func isSignedActionType(typ string) bool {
 	switch typ {
-	case "send", "ping", "pong", "friend_add", "friend_accept", "channel_create", "group_invite", "group_invite_reject", "channel_join", "channel_leave", "channel_send", "profile_set", "profile_get", "presence_keepalive":
+	case "send", "ping", "pong", "friend_add", "friend_accept", "channel_create", "group_invite", "group_invite_reject", "channel_join", "channel_leave", "channel_send", "profile_set", "profile_get", "group_profile_set", "group_profile_get", "presence_keepalive":
 		return true
 	default:
 		return false
@@ -1205,6 +1217,10 @@ func validateSignedActionPacket(p Packet) bool {
 		return strings.TrimSpace(p.Body) != ""
 	case "profile_get":
 		return strings.TrimSpace(p.To) != ""
+	case "group_profile_set":
+		return strings.TrimSpace(p.Group) != "" && strings.TrimSpace(p.Body) != ""
+	case "group_profile_get":
+		return strings.TrimSpace(p.Group) != ""
 	case "presence_keepalive":
 		return strings.TrimSpace(p.Body) != ""
 	default:
@@ -1366,6 +1382,19 @@ func validateProfilePayloadLimits(payload *profilePayload) error {
 	}
 	if utf8.RuneCountInString(strings.TrimSpace(payload.ProfileText)) > maxProfileTextRunes {
 		return fmt.Errorf("profile_text exceeds %d chars", maxProfileTextRunes)
+	}
+	return nil
+}
+
+func validateGroupProfilePayloadLimits(payload *groupProfilePayload) error {
+	if payload == nil {
+		return fmt.Errorf("group profile payload is required")
+	}
+	if strings.TrimSpace(payload.Group) == "" {
+		return fmt.Errorf("group is required")
+	}
+	if utf8.RuneCountInString(strings.TrimSpace(payload.ProfileText)) > maxGroupProfileTextRunes {
+		return fmt.Errorf("profile_text exceeds %d chars", maxGroupProfileTextRunes)
 	}
 	return nil
 }
@@ -1576,6 +1605,15 @@ func (s *Server) persistProfileCache(loginID string, payload profilePayload) {
 	}
 }
 
+func (s *Server) persistGroupProfileCache(group string, payload groupProfilePayload) {
+	if s.persistenceMode != persistenceModePersist || s.store == nil {
+		return
+	}
+	if err := s.store.rememberGroupProfileCache(group, payload); err != nil {
+		log.Printf("persist group profile cache failed for %s: %v", group, err)
+	}
+}
+
 func (s *Server) loadPersistedProfiles() {
 	if s.persistenceMode != persistenceModePersist || s.store == nil {
 		return
@@ -1595,6 +1633,27 @@ func (s *Server) loadPersistedProfiles() {
 	}
 	s.mu.Unlock()
 	log.Printf("loaded persisted profiles: %d", len(entries))
+}
+
+func (s *Server) loadPersistedGroupProfiles() {
+	if s.persistenceMode != persistenceModePersist || s.store == nil {
+		return
+	}
+	entries, err := s.store.loadGroupProfileCache(defaultProfileCacheTTL)
+	if err != nil {
+		log.Printf("load persisted group profile cache failed: %v", err)
+		return
+	}
+	if len(entries) == 0 {
+		return
+	}
+	s.mu.Lock()
+	for _, e := range entries {
+		s.groupProfiles[e.Group] = e.Payload
+		s.groupProfileUpdated[e.Group] = e.UpdatedAt
+	}
+	s.mu.Unlock()
+	log.Printf("loaded persisted group profiles: %d", len(entries))
 }
 
 func (s *Server) getFreshProfile(loginID string) (profilePayload, bool) {
@@ -1617,6 +1676,30 @@ func (s *Server) getFreshProfile(loginID string) (profilePayload, bool) {
 	p, ok := s.profiles[loginID]
 	if !ok {
 		return profilePayload{}, false
+	}
+	return p, true
+}
+
+func (s *Server) getFreshGroupProfile(group string) (groupProfilePayload, bool) {
+	group = strings.TrimSpace(group)
+	if group == "" {
+		return groupProfilePayload{}, false
+	}
+	cutoff := time.Now().Add(-defaultProfileCacheTTL).Unix()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	updatedAt, ok := s.groupProfileUpdated[group]
+	if !ok {
+		return groupProfilePayload{}, false
+	}
+	if updatedAt < cutoff {
+		delete(s.groupProfileUpdated, group)
+		delete(s.groupProfiles, group)
+		return groupProfilePayload{}, false
+	}
+	p, ok := s.groupProfiles[group]
+	if !ok {
+		return groupProfilePayload{}, false
 	}
 	return p, true
 }
@@ -1975,6 +2058,112 @@ func (s *Server) handleChannelSend(p Packet) {
 	}
 }
 
+func (s *Server) canEditGroupProfile(group string, loginID string) bool {
+	group = strings.TrimSpace(group)
+	loginID = strings.TrimSpace(loginID)
+	if group == "" || loginID == "" {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for key, ch := range s.channels {
+		g, _ := splitChannelKey(key)
+		if g != group {
+			continue
+		}
+		if strings.TrimSpace(ch.Owner) == loginID {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) handleGroupProfileSet(p Packet) {
+	group := strings.TrimSpace(p.Group)
+	if group == "" {
+		s.sendProtocolError(p.From, "group_profile_set failed: group is required")
+		return
+	}
+	if !s.canEditGroupProfile(group, p.From) {
+		s.sendProtocolError(p.From, "group_profile_set failed: owner permission required")
+		return
+	}
+	var payload groupProfilePayload
+	if err := json.Unmarshal([]byte(strings.TrimSpace(p.Body)), &payload); err != nil {
+		s.sendProtocolError(p.From, "group_profile_set failed: invalid payload")
+		return
+	}
+	payload.Group = group
+	payload.ProfileText = strings.TrimSpace(payload.ProfileText)
+	payload.ProfileImage = strings.TrimSpace(payload.ProfileImage)
+	if err := validateGroupProfilePayloadLimits(&payload); err != nil {
+		s.sendProtocolError(p.From, "group_profile_set failed: "+err.Error())
+		return
+	}
+	if err := validateProfileImageDataURL(payload.ProfileImage, maxGroupProfileImageBytes); err != nil {
+		s.sendProtocolError(p.From, "group_profile_set failed: "+err.Error())
+		return
+	}
+
+	s.mu.Lock()
+	s.groupProfiles[group] = payload
+	s.groupProfileUpdated[group] = time.Now().Unix()
+	s.mu.Unlock()
+	s.persistGroupProfileCache(group, payload)
+
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	body, comp, usize, err := encodeBodyForRelay(string(bodyBytes))
+	if err != nil {
+		return
+	}
+	s.notifyUserOrQueue(Packet{
+		Type:        "group_profile_data",
+		ID:          p.ID,
+		From:        p.From,
+		To:          p.From,
+		Group:       group,
+		Body:        body,
+		Compression: comp,
+		USize:       usize,
+		Origin:      s.id,
+		PubKey:      p.PubKey,
+		Sig:         p.Sig,
+	})
+}
+
+func (s *Server) handleGroupProfileGet(p Packet) {
+	group := strings.TrimSpace(p.Group)
+	if group == "" {
+		return
+	}
+	payload, ok := s.getFreshGroupProfile(group)
+	if !ok {
+		return
+	}
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	body, comp, usize, err := encodeBodyForRelay(string(bodyBytes))
+	if err != nil {
+		return
+	}
+	s.notifyUserOrQueue(Packet{
+		Type:        "group_profile_data",
+		ID:          s.nextMessageID(),
+		From:        p.From,
+		To:          p.From,
+		Group:       group,
+		Body:        body,
+		Compression: comp,
+		USize:       usize,
+		Origin:      s.id,
+	})
+}
+
 func (s *Server) handleProfileSet(p Packet) {
 	var payload profilePayload
 	if err := json.Unmarshal([]byte(p.Body), &payload); err != nil {
@@ -2134,6 +2323,10 @@ func (s *Server) processSignedAction(p Packet) {
 		s.handleProfileSet(p)
 	case "profile_get":
 		s.handleProfileGet(p)
+	case "group_profile_set":
+		s.handleGroupProfileSet(p)
+	case "group_profile_get":
+		s.handleGroupProfileGet(p)
 	case "presence_keepalive":
 		s.handlePresenceKeepalive(p.From, p.Body)
 	}
