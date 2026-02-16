@@ -7,98 +7,48 @@
   <style>
     [hidden] { display:none !important; }
     :root {
-      --bg:#eef3f7;
-      --ink:#102235;
-      --muted:#4d6478;
-      --card:#ffffff;
-      --line:#d6e1ea;
-      --brand:#0f7a67;
-      --brand-ink:#f2fffb;
-      --accent:#f4a259;
-      --danger:#b43636;
-      --shadow:0 20px 50px rgba(16,34,53,.14);
+      --bg:#030608;
+      --ink:#e6edf3;
+      --muted:#8e9aa7;
+      --panel:#10141c;
+      --line:#1e2531;
+      --accent:#55b2ff;
+      --accent-strong:#65d59c;
+      --accent-warm:#f4a259;
+      --shadow:0 32px 70px rgba(0,0,0,.6);
     }
     * { box-sizing:border-box; }
     body {
       margin:0;
       color:var(--ink);
-      font-family:"Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+      font-family:"Inter", "Avenir Next", "Segoe UI", sans-serif;
       background:
-        radial-gradient(1100px 620px at 10% -10%, #cde4f3 0%, transparent 60%),
-        radial-gradient(1000px 620px at 100% 110%, #f9dfc5 0%, transparent 55%),
-        var(--bg);
+        radial-gradient(1200px 800px at 10% -30%, rgba(85,178,255,.25) 0%, transparent 60%),
+        radial-gradient(1000px 650px at 100% 100%, rgba(244,162,89,.2) 0%, transparent 55%),
+        linear-gradient(180deg, #030608 0%, #0c121a 40%, #05070d 100%);
       min-height:100vh;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      padding:24px;
     }
-    .page {
-      min-height:100vh;
-      display:grid;
-      grid-template-columns:minmax(300px, 1.1fr) minmax(380px, 1.3fr);
-      gap:20px;
-      padding:28px;
-      align-items:stretch;
+    .login-shell {
+      width:min(780px, 100%);
     }
-    .hero {
-      background:linear-gradient(155deg, #0f7a67 0%, #0d5a7e 55%, #15415f 100%);
-      color:#ecfffb;
-      border-radius:18px;
-      padding:28px;
+    .login-card {
+      border-radius:32px;
+      background:linear-gradient(180deg, #111826, #0d1118 60%, #080b11 100%);
+      border:1px solid rgba(255,255,255,.08);
       box-shadow:var(--shadow);
+      overflow:hidden;
       display:flex;
       flex-direction:column;
-      justify-content:space-between;
-      overflow:hidden;
-      position:relative;
-    }
-    .hero::after {
-      content:"";
-      position:absolute;
-      width:280px;
-      height:280px;
-      right:-90px;
-      bottom:-90px;
-      border-radius:50%;
-      background:rgba(255,255,255,.14);
-    }
-    .hero h1 {
-      margin:0;
-      font-size:34px;
-      line-height:1.05;
-      letter-spacing:.01em;
-      font-weight:800;
-    }
-    .hero p {
-      margin:10px 0 0;
-      color:#d9f5ef;
-      max-width:38ch;
-      line-height:1.45;
-      font-size:15px;
-    }
-    .hero-notes {
-      margin-top:24px;
-      display:grid;
-      gap:10px;
-      z-index:1;
-    }
-    .hero-note {
-      background:rgba(255,255,255,.14);
-      border:1px solid rgba(255,255,255,.23);
-      border-radius:10px;
-      padding:10px 12px;
-      font-size:13px;
-      line-height:1.35;
-      color:#edfffb;
-      backdrop-filter: blur(2px);
     }
     .panel {
-      border-radius:18px;
-      background:var(--card);
-      border:1px solid var(--line);
-      box-shadow:var(--shadow);
-      padding:18px;
+      padding:32px;
       display:flex;
       flex-direction:column;
-      min-height:0;
-      gap:12px;
+      gap:18px;
     }
     .heading {
       display:flex;
@@ -108,130 +58,175 @@
     }
     .heading h2 {
       margin:0;
-      font-size:24px;
+      font-size:22px;
+      letter-spacing:.02em;
       font-weight:800;
-      letter-spacing:.01em;
     }
     .tag {
-      border-radius:999px;
-      border:1px solid #bcd6cc;
-      color:#0c6454;
-      background:#e9faf5;
+      display:inline-flex;
+      align-items:center;
+      gap:4px;
       padding:4px 10px;
-      font-size:12px;
-      font-weight:700;
+      border-radius:999px;
+      border:1px solid rgba(255,255,255,.14);
+      font-size:11px;
       text-transform:uppercase;
-      letter-spacing:.05em;
+      letter-spacing:.08em;
+      color:var(--muted);
+      background:rgba(255,255,255,.04);
     }
     .sub {
       margin:0;
       color:var(--muted);
       font-size:14px;
-      line-height:1.4;
     }
     .error {
-      color:var(--danger);
-      font-size:13px;
       min-height:18px;
+      color:#f7796c;
+      font-size:13px;
       font-weight:600;
     }
     .list {
-      border:1px solid var(--line);
-      border-radius:12px;
-      background:#f9fbfd;
-      padding:8px;
-      min-height:160px;
+      border-radius:16px;
+      border:1px solid rgba(255,255,255,.08);
+      background:rgba(255,255,255,.02);
+      padding:10px;
+      display:flex;
+      flex-direction:column;
+      gap:10px;
       max-height:36vh;
       overflow:auto;
+      min-height:160px;
     }
-    .setup-id-row {
-      width:100%;
-      text-align:left;
-      margin:0 0 8px;
-      padding:11px 12px;
-      background:#fff;
-      color:var(--ink);
-      border:1px solid #d9e4ec;
-      border-radius:10px;
+    .identity-card {
+      display:flex;
+      align-items:center;
+      gap:12px;
+      border-radius:16px;
+      padding:12px 14px;
+      background:rgba(255,255,255,.03);
+      border:1px solid transparent;
       cursor:pointer;
-      transition: border-color .12s ease, transform .12s ease, box-shadow .12s ease;
-    }
-    .setup-id-row:hover { transform:translateY(-1px); box-shadow:0 5px 14px rgba(16,34,53,.08); }
-    .setup-id-row:last-child { margin-bottom:0; }
-    .setup-id-row.active {
-      border-color:#0f7a67;
-      box-shadow:0 0 0 2px rgba(15,122,103,.17);
-      background:#f0fcf9;
-    }
-    .setup-id-meta {
-      display:block;
-      color:#556c7f;
-      font-size:12px;
-      margin-top:3px;
-      overflow-wrap:anywhere;
-      word-break:break-word;
-      line-height:1.35;
-    }
-    .btn-row {
-      display:grid;
-      grid-template-columns:1fr 1fr;
-      gap:10px;
-    }
-    .input, .btn {
-      width:100%;
-      border-radius:10px;
-      border:1px solid #cad8e4;
-      font-size:14px;
-      padding:10px 11px;
-    }
-    .input {
-      background:#fff;
+      transition:border-color .12s ease, transform .12s ease, box-shadow .12s ease;
       color:var(--ink);
-      outline:none;
+      text-align:left;
     }
-    .input:focus {
-      border-color:#2e7db8;
-      box-shadow:0 0 0 3px rgba(46,125,184,.16);
+    .identity-card:hover { transform:translateY(-1px); }
+    .identity-card.active {
+      border-color:var(--accent);
+      box-shadow:0 0 0 2px rgba(85,178,255,.25);
+    }
+    .identity-avatar {
+      width:44px;
+      height:44px;
+      border-radius:50%;
+      background:linear-gradient(135deg, rgba(85,178,255,.35), rgba(101,213,156,.35));
+      border:1px solid rgba(255,255,255,.6);
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      font-weight:700;
+      font-size:16px;
+      text-transform:uppercase;
+    }
+    .identity-info {
+      flex:1;
+      display:flex;
+      flex-direction:column;
+      gap:4px;
+      min-width:0;
+    }
+    .identity-name {
+      font-weight:700;
+      font-size:16px;
+      color:#e6edf3;
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+    }
+    .identity-login {
+      font-size:13px;
+      color:var(--muted);
+    }
+    .identity-empty {
+      font-size:14px;
+      color:var(--muted);
+      text-align:center;
+      padding:22px 8px;
+      border-radius:12px;
+      border:1px dashed rgba(255,255,255,.2);
+      background:rgba(255,255,255,.01);
+    }
+    .control-row {
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:12px;
+      flex-wrap:wrap;
     }
     .btn {
-      font-weight:700;
+      border-radius:14px;
+      border:1px solid rgba(255,255,255,.1);
+      font-size:15px;
+      padding:12px 16px;
+      background:rgba(255,255,255,.05);
+      color:var(--ink);
       cursor:pointer;
-      transition:transform .12s ease, filter .12s ease;
+      font-weight:700;
+      transition:transform .12s ease, box-shadow .12s ease;
     }
     .btn:hover { transform:translateY(-1px); }
     .btn:active { transform:translateY(0); }
-    .btn-primary {
-      border-color:#0f7a67;
-      background:#0f7a67;
-      color:var(--brand-ink);
-    }
-    .btn-secondary {
-      border-color:#2e7db8;
-      background:#2e7db8;
-      color:#f3f9ff;
+    .btn-main {
+      flex:1;
+      background:linear-gradient(180deg, #2a6cff, #1a1f64);
+      color:#fff;
+      box-shadow:0 14px 30px rgba(42,108,255,.35);
+      border:none;
+      min-width:180px;
     }
     .btn-warm {
-      border-color:#d88536;
-      background:#f4a259;
-      color:#35250f;
+      background:linear-gradient(180deg, #f4a259, #d36f2b);
+      border:none;
+      color:#1a0f07;
+      box-shadow:0 10px 20px rgba(210,111,43,.35);
     }
-    .section {
-      border-top:1px solid var(--line);
-      padding-top:12px;
-      display:grid;
+    .icon-group {
+      display:flex;
       gap:8px;
     }
-    .section h3 {
-      margin:0;
-      font-size:13px;
-      color:#385065;
-      letter-spacing:.03em;
-      text-transform:uppercase;
+    .icon-btn {
+      background:rgba(255,255,255,.05);
+      border:1px solid rgba(255,255,255,.12);
+      border-radius:12px;
+      padding:10px;
+      width:44px;
+      height:44px;
+      display:flex;
+      align-items:center;
+      justify-content:center;
     }
+    .icon-btn svg { width:18px; height:18px; stroke:currentColor; stroke-width:1.8; fill:none; }
+    .icon-btn-danger {
+      border-color:#d9534f;
+      color:#f8d7da;
+      background:rgba(217,83,79,.15);
+    }
+    .restore-panel {
+      border-radius:16px;
+      border:1px solid rgba(255,255,255,.12);
+      background:rgba(255,255,255,.02);
+      padding:12px;
+      display:flex;
+      gap:10px;
+      align-items:center;
+      flex-wrap:wrap;
+    }
+    .restore-panel .input { flex:1; }
     .overlay {
       position:fixed;
       inset:0;
-      background:rgba(13,27,40,.56);
+      background:rgba(3,6,10,.8);
       z-index:2500;
       display:flex;
       align-items:center;
@@ -239,78 +234,100 @@
       padding:16px;
     }
     .modal {
-      width:min(680px, 96vw);
+      width:min(640px, 96vw);
       max-height:92vh;
       overflow:auto;
-      background:#fff;
-      border:1px solid var(--line);
-      border-radius:14px;
-      padding:16px;
-      box-shadow:0 20px 48px rgba(16,34,53,.24);
+      background:#111625;
+      border:1px solid rgba(255,255,255,.08);
+      border-radius:16px;
+      padding:18px;
+      box-shadow:0 30px 60px rgba(0,0,0,.6);
+    }
+    .modal button {
+      border-radius:10px;
+      border:1px solid rgba(255,255,255,.12);
+      background:rgba(255,255,255,.02);
+      color:var(--ink);
+      padding:8px 12px;
+      cursor:pointer;
     }
     .recovery-key {
       font-family:"SF Mono", Menlo, Consolas, monospace;
-      background:#f5fafc;
-      border:1px solid #d7e4ec;
-      border-radius:8px;
+      background:#0c111a;
+      border:1px solid rgba(255,255,255,.06);
+      border-radius:10px;
       padding:10px;
       word-break:break-all;
       white-space:pre-wrap;
-      color:#173247;
+      color:#8ad7ff;
     }
     .recovery-qr-wrap { display:flex; justify-content:center; margin-top:10px; }
     .recovery-qr-wrap img {
       width:256px;
       max-width:80vw;
       height:auto;
-      background:#fff;
-      padding:8px;
-      border-radius:8px;
-      border:1px solid #d8e4ec;
+      background:#0b0f15;
+      padding:10px;
+      border-radius:12px;
+      border:1px solid rgba(255,255,255,.08);
     }
-    .row { display:flex; gap:8px; }
-    @media (max-width: 940px) {
-      .page { grid-template-columns:1fr; padding:14px; }
-      .hero { min-height:200px; }
+    .share-toast {
+      margin-top:10px;
+      padding:8px 12px;
+      border-radius:10px;
+      background:rgba(85,178,255,.2);
+      border:1px solid rgba(85,178,255,.4);
+      font-size:13px;
+      color:#dff4ff;
+      width:max-content;
+    }
+    @media (max-width: 640px) {
+      .panel { padding:24px; }
+      .control-row { flex-direction:column-reverse; }
+      .icon-group { width:100%; justify-content:space-between; }
+      .restore-panel { flex-direction:column; align-items:flex-start; }
     }
   </style>
 </head>
 <body>
-<div class="page">
-  <section class="hero">
-    <div>
-      <h1>Open Accord</h1>
-      <p>Choose an identity to sign in. You can create a new identity or restore one from a recovery key.</p>
+    <div class="login-shell">
+      <section class="login-card">
+        <div class="panel">
+          <div class="heading">
+            <h1>Open Accord</h1>
+            <span class="tag">Local accounts</span>
+          </div>
+          <p class="sub">Select one identity and hit the login button. Use the helpers to create, backup, restore, or delete.</p>
+          <div id="setupErr" class="error"></div>
+          <div id="setupList" class="list" aria-live="polite"></div>
+          <div class="control-row">
+            <button id="setupConnect" class="btn btn-main">Login</button>
+            <div class="icon-group">
+              <button id="setupCreate" class="icon-btn" title="Create new identity">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+              </button>
+              <button id="setupBackup" class="icon-btn" title="Share backup pack">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v10M8 10l4 4 4-4" /><path d="M6 18h12" /></svg>
+              </button>
+              <button id="restoreToggle" class="icon-btn" title="Restore from recovery key">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 6l-4-4-4 4M12 2v14" /><path d="M6 18h12" /></svg>
+              </button>
+              <button id="setupDelete" class="icon-btn icon-btn-danger" title="Delete identity">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 7h12M9 7v10m6-10v10M8 7l1-2h6l1 2" /><path d="M5 10h14l-.5 8H5.5z" /></svg>
+              </button>
+              <button id="setupShare" class="icon-btn" title="Share userid">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 12H4v6h12v-4" /><path d="M20 8l-4-4-4 4M16 4v16" /></svg>
+              </button>
+            </div>
+          </div>
+          <div class="restore-panel" id="restorePanel" hidden>
+            <input id="setupRecoveryInput" class="input" placeholder="Paste Base58 recovery key">
+            <button id="setupRestore" class="btn btn-warm">Load from recovery</button>
+          </div>
+          <div id="shareToast" class="share-toast" hidden>userid copied, share with friends!</div>
+        </div>
+      </section>
     </div>
-    <div class="hero-notes">
-      <div class="hero-note">Identities are local key files. Keep a secure offline backup.</div>
-      <div class="hero-note">New identity creation includes recovery text and QR for fast secure capture.</div>
-      <div class="hero-note">This page only handles login/setup. Messaging appears after sign-in.</div>
-    </div>
-  </section>
-
-  <section class="panel">
-    <div class="heading">
-      <h2>Identity Login</h2>
-      <span class="tag">Local</span>
-    </div>
-    <p class="sub">Select one identity and connect, or create/restore below.</p>
-    <div id="setupErr" class="error"></div>
-
-    <div id="setupList" class="list"></div>
-    <div class="btn-row">
-      <button id="setupConnect" class="btn btn-primary">Connect Selected</button>
-      <button id="setupCreate" class="btn btn-secondary">Create New Identity</button>
-    </div>
-    <button id="setupBackup" class="btn btn-secondary" style="margin-top:2px;">Backup Selected</button>
-
-    <div class="section">
-      <h3>Restore</h3>
-      <input id="setupRecoveryInput" class="input" placeholder="Base58 recovery key (dashes/spaces allowed)">
-      <button id="setupRestore" class="btn btn-warm">Restore Identity</button>
-    </div>
-  </section>
-</div>
 
 <div id="recoveryOverlay" class="overlay" hidden>
   <div class="modal">
@@ -333,6 +350,22 @@
   </div>
 </div>
 
+<div id="deleteOverlay" class="overlay" hidden>
+  <div class="modal">
+    <div class="row" style="align-items:center;">
+      <h3 style="margin:0; flex:1; font-size:16px;">Delete Identity</h3>
+      <button id="deleteCancel" style="width:auto; padding:5px 9px;" title="Cancel">Cancel</button>
+    </div>
+    <p class="small" style="margin-top:12px;">
+      Deleting an identity removes its key permanently. Make sure you have a backup pack or recovery code safe before proceeding.
+    </p>
+    <p class="small" id="deleteTargetLabel"></p>
+    <div class="row" style="margin-top:12px;">
+      <button id="deleteConfirm" class="btn btn-warm">Delete</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const setupList = document.getElementById('setupList');
 const setupErr = document.getElementById('setupErr');
@@ -341,8 +374,19 @@ const recoveryOverlay = document.getElementById('recoveryOverlay');
 const recoveryMeta = document.getElementById('recoveryMeta');
 const recoveryKeyEl = document.getElementById('recoveryKey');
 const recoveryQREl = document.getElementById('recoveryQR');
+const restorePanel = document.getElementById('restorePanel');
+const restoreToggle = document.getElementById('restoreToggle');
+const deleteOverlay = document.getElementById('deleteOverlay');
+const deleteTargetLabel = document.getElementById('deleteTargetLabel');
+const deleteConfirmBtn = document.getElementById('deleteConfirm');
+const deleteCancelBtn = document.getElementById('deleteCancel');
+const shareToast = document.getElementById('shareToast');
+const setupShareBtn = document.getElementById('setupShare');
 let selectedSetupPath = '';
 let recoveryResolver = null;
+let selectedIdentityEntry = null;
+let deleteTargetPath = '';
+let shareToastTimer = null;
 
 async function post(url, body) {
   const res = await fetch(url, {
@@ -361,32 +405,89 @@ async function setupStatus() {
   return res.json();
 }
 
+function initialsFromLabel(label) {
+  const parts = (label || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '??';
+  if (parts.length === 1) return (parts[0].slice(0, 2)).toUpperCase();
+  return (parts[0][0] + (parts[1][0] || '')).toUpperCase();
+}
+
+function identityDisplayLabel(entry) {
+  if (!entry) return 'selected identity';
+  return (entry.name || '').trim() || (entry.user_id || '').trim() || (entry.login_id || '').slice(0, 12) || '(identity)';
+}
+
+function openDeleteDialog() {
+  if (!selectedSetupPath) {
+    setupErr.textContent = 'Select an identity before deleting.';
+    return;
+  }
+  deleteTargetPath = selectedSetupPath;
+  if (deleteTargetLabel) {
+    deleteTargetLabel.textContent = `Will delete ${identityDisplayLabel(selectedIdentityEntry)}.`;
+  }
+  if (deleteOverlay) {
+    deleteOverlay.hidden = false;
+  }
+}
+
+function hideDeleteDialog() {
+  deleteTargetPath = '';
+  if (deleteOverlay) deleteOverlay.hidden = true;
+  if (deleteTargetLabel) deleteTargetLabel.textContent = '';
+}
+
 function renderSetupIdentities(ids) {
   setupList.innerHTML = '';
   const items = Array.isArray(ids) ? ids : [];
   if (items.length === 0) {
-    setupList.textContent = 'No identities found.';
+    const empty = document.createElement('div');
+    empty.className = 'identity-empty';
+    empty.textContent = 'No identities found.';
+    setupList.appendChild(empty);
     selectedSetupPath = '';
+    selectedIdentityEntry = null;
     return;
   }
   if (!selectedSetupPath || !items.some((x) => (x.path || '') === selectedSetupPath)) {
     const cur = items.find((x) => x.current);
     selectedSetupPath = (cur && cur.path) || (items[0].path || '');
   }
+  const fragment = document.createDocumentFragment();
   for (const it of items) {
-    const row = document.createElement('button');
-    row.type = 'button';
-    row.className = 'setup-id-row';
-    if ((it.path || '') === selectedSetupPath) row.classList.add('active');
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'identity-card';
+    if ((it.path || '') === selectedSetupPath) card.classList.add('active');
     const userID = (it.user_id || '').trim();
-    const label = (it.name || '').trim() || (userID || (it.login_id || '').slice(0, 12) || '(unknown)');
-    row.innerHTML = `${label}<span class="setup-id-meta">${userID || '(no user id)'} · ${it.path || ''}</span>`;
-    row.onclick = () => {
+    const loginID = (it.login_id || '').trim();
+    const label = (it.name || '').trim() || (userID || loginID.slice(0, 12) || '(identity)');
+
+    const avatar = document.createElement('div');
+    avatar.className = 'identity-avatar';
+    avatar.textContent = initialsFromLabel(label);
+
+    const info = document.createElement('div');
+    info.className = 'identity-info';
+    const nameEl = document.createElement('div');
+    nameEl.className = 'identity-name';
+    nameEl.textContent = label;
+    const meta = document.createElement('div');
+    meta.className = 'identity-login';
+    meta.textContent = 'Tap to select';
+    info.append(nameEl, meta);
+
+    card.append(avatar, info);
+    card.onclick = () => {
       selectedSetupPath = it.path || '';
+      selectedIdentityEntry = it;
       renderSetupIdentities(items);
     };
-    setupList.appendChild(row);
+    fragment.appendChild(card);
   }
+  setupList.appendChild(fragment);
+  const selectedEntry = items.find((x) => (x.path || '') === selectedSetupPath) || null;
+  selectedIdentityEntry = selectedEntry;
 }
 
 async function refreshSetupUI() {
@@ -397,6 +498,18 @@ async function refreshSetupUI() {
   }
   renderSetupIdentities(st.identities || []);
   return st;
+}
+
+function showShareToast() {
+  if (!shareToast) return;
+  shareToast.hidden = false;
+  if (shareToastTimer) {
+    clearTimeout(shareToastTimer);
+  }
+  shareToastTimer = setTimeout(() => {
+    shareToast.hidden = true;
+    shareToastTimer = null;
+  }, 1800);
 }
 
 async function connectSelectedIdentity() {
@@ -456,6 +569,7 @@ async function restoreIdentityFromSetup() {
   setupRecoveryInput.value = '';
   selectedSetupPath = restored.path || '';
   await refreshSetupUI();
+  if (restorePanel) restorePanel.hidden = true;
 }
 
 document.getElementById('recoveryClose').onclick = () => {
@@ -518,6 +632,69 @@ document.getElementById('setupRestore').onclick = async () => {
     setupErr.textContent = e.message || 'restore failed';
   }
 };
+
+if (restoreToggle && restorePanel) {
+  restoreToggle.onclick = () => {
+    restorePanel.hidden = !restorePanel.hidden;
+    if (!restorePanel.hidden) {
+      setupRecoveryInput.focus();
+    }
+  };
+}
+
+if (deleteConfirmBtn) {
+  deleteConfirmBtn.onclick = async () => {
+    if (!deleteTargetPath) {
+      setupErr.textContent = 'No identity selected for deletion.';
+      return;
+    }
+    try {
+      await post('/api/setup/delete', {path: deleteTargetPath});
+      hideDeleteDialog();
+      selectedSetupPath = '';
+      await refreshSetupUI();
+    } catch (e) {
+      setupErr.textContent = e.message || 'delete failed';
+    }
+  };
+}
+
+if (deleteCancelBtn) {
+  deleteCancelBtn.onclick = () => {
+    hideDeleteDialog();
+  };
+}
+
+const setupDeleteBtn = document.getElementById('setupDelete');
+if (setupDeleteBtn) {
+  setupDeleteBtn.onclick = () => {
+    openDeleteDialog();
+  };
+}
+
+if (setupShareBtn) {
+  setupShareBtn.onclick = async () => {
+    if (!selectedIdentityEntry) {
+      setupErr.textContent = 'Select an identity before sharing.';
+      return;
+    }
+    setupErr.textContent = '';
+    const shareId = ((selectedIdentityEntry.user_id || '') || (selectedIdentityEntry.login_id || '')).trim();
+    if (!shareId) {
+      setupErr.textContent = 'Identity has no shareable id.';
+      return;
+    }
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(shareId);
+      }
+    } catch (_) {}
+    if (shareToast) {
+      shareToast.textContent = 'userid copied, share with friends!';
+      showShareToast();
+    }
+  };
+}
 
 refreshSetupUI().catch((e) => {
   setupErr.textContent = e.message || 'setup failed';

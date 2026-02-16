@@ -208,6 +208,11 @@ func saveLastUsedIdentity(home string, keyPath string) {
 	_ = os.WriteFile(path, []byte(keyPath+"\n"), 0o600)
 }
 
+func clearLastUsedIdentity(home string) {
+	path := lastUsedIdentityPath(home)
+	_ = os.Remove(path)
+}
+
 func uiStatePathForProfile(profilePath string) string {
 	return strings.TrimSpace(profilePath) + ".ui.json"
 }
@@ -3656,11 +3661,42 @@ func main() {
 		saveLastUsedIdentity(home, chosen)
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path": chosen, "login_id": connectedClient.loginID, "user_id": userIDForLoginID(connectedClient.loginID)})
 	})
+	mux.HandleFunc("/api/setup/delete", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Path string `json:"path"`
+		}
+		if err := decodeJSON(r, &req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+			return
+		}
+		path := strings.TrimSpace(req.Path)
+		if path == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "identity path required"})
+			return
+		}
+		appMu.RLock()
+		current := activeKeyPath
+		appMu.RUnlock()
+		if current != "" && path == current {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "cannot delete active identity"})
+			return
+		}
+		if err := os.Remove(path); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if last := loadLastUsedIdentity(home); last == path {
+			clearLastUsedIdentity(home)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	})
 	mux.HandleFunc("/api/setup/disconnect", func(w http.ResponseWriter, _ *http.Request) {
 		appMu.Lock()
 		c := client
 		client = nil
+		activeKeyPath = ""
 		appMu.Unlock()
+		clearLastUsedIdentity(home)
 		if c != nil {
 			c.close()
 		}
