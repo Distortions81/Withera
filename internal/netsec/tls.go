@@ -47,7 +47,7 @@ func EnsureSelfSignedCert(certPath string, keyPath string, hosts []string) error
 	tpl := &x509.Certificate{
 		SerialNumber: serial,
 		Subject: pkix.Name{
-			CommonName: "goaccord-self-signed",
+			CommonName: "withera-self-signed",
 		},
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().AddDate(5, 0, 0),

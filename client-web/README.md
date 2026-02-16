@@ -1,6 +1,6 @@
 # client-web
 
-Simple local web UI client for goAccord.
+Simple local web UI client for Withera.
 
 ## Run
 
@@ -21,7 +21,7 @@ On startup it:
 
 1. Starts local HTTP listener and serves a browser UI.
 2. Lets you choose/create/restore identity in the web UI.
-3. Connects/authenticates to a goAccord node after identity selection.
+3. Connects/authenticates to a Withera node after identity selection.
 
 ## UI capabilities
 
@@ -40,4 +40,4 @@ On startup it:
 - Uses same signed message/auth model as `client-tui`.
 - Uses same compression behavior (`none` or `zlib`) for outgoing text payloads.
 - Uses local read-merge-atomic-write for contacts/profile files to reduce multi-instance clobbering.
-- Persists verified peer E2EE keys and seen friend-key nonces under `~/.goaccord/e2ee/`.
+- Persists verified peer E2EE keys and seen friend-key nonces under `~/.withera/e2ee/` (or legacy `~/.goaccord/e2ee/`).

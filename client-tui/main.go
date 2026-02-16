@@ -9,6 +9,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"goaccord/internal/apphome"
 )
 
 func main() {
@@ -26,9 +27,10 @@ func main() {
 		fmt.Printf("unable to resolve home directory: %v\n", err)
 		os.Exit(1)
 	}
+	baseDir := apphome.BaseDirWithHome(home)
 
 	if strings.TrimSpace(*keyPath) == "" {
-		*keyPath = filepath.Join(home, ".goaccord", "ed25519_key.json")
+		*keyPath = filepath.Join(baseDir, "ed25519_key.json")
 	}
 
 	selectedStartupKeyPath, err := promptIdentityPath(home, *keyPath, false)
@@ -39,10 +41,10 @@ func main() {
 	*keyPath = selectedStartupKeyPath
 
 	if strings.TrimSpace(*contactsPath) == "" {
-		*contactsPath = filepath.Join(home, ".goaccord", "contacts.json")
+		*contactsPath = filepath.Join(baseDir, "contacts.json")
 	}
 	if strings.TrimSpace(*profilePath) == "" {
-		*profilePath = filepath.Join(home, ".goaccord", "profiles", "profile-"+filepath.Base(strings.TrimSpace(*keyPath))+".json")
+		*profilePath = filepath.Join(baseDir, "profiles", "profile-"+filepath.Base(strings.TrimSpace(*keyPath))+".json")
 	}
 	uiStatePath := uiStatePathForProfile(*profilePath)
 

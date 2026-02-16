@@ -462,7 +462,7 @@ func (s *Server) dialTimeout(address string, timeout time.Duration) (net.Conn, e
 
 const statsPageHTML = `<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>goAccord Node Stats</title>
+<title>Withera Node Stats</title>
 <style>
 body{font-family:ui-monospace,Menlo,Consolas,monospace;background:#0f1318;color:#e6edf3;margin:0;padding:12px}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
@@ -473,7 +473,7 @@ th,td{border-bottom:1px solid #2d3742;padding:4px;text-align:left}
 @media(max-width:900px){.grid{grid-template-columns:1fr}}
 </style></head>
 <body>
-<h2>goAccord Node Stats</h2>
+<h2>Withera Node Stats</h2>
 <div class="grid">
 <div class="card"><h3>Summary</h3><pre id="summary"></pre></div>
 <div class="card"><h3>Runtime</h3><pre id="runtime"></pre></div>

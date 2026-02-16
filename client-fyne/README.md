@@ -15,6 +15,6 @@ go run ./client-fyne
 
 Default values:
 - server: `127.0.0.1:9101`
-- key file: `~/.goaccord/ed25519_key.json`
+- key file: `~/.withera/ed25519_key.json` (or legacy `~/.goaccord/ed25519_key.json`)
 
 This is an initial scaffold. Feature parity with `client-web` / `client-tui` is not implemented yet.

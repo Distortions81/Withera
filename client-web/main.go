@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/skip2/go-qrcode"
+	"goaccord/internal/apphome"
 	"goaccord/internal/netsec"
 )
 
@@ -191,11 +192,11 @@ type identityCandidate struct {
 }
 
 func profilePathForKey(home string, keyPath string) string {
-	return filepath.Join(home, ".goaccord", "profiles", "profile-"+filepath.Base(strings.TrimSpace(keyPath))+".json")
+	return filepath.Join(apphome.BaseDirWithHome(home), "profiles", "profile-"+filepath.Base(strings.TrimSpace(keyPath))+".json")
 }
 
 func lastUsedIdentityPath(home string) string {
-	return filepath.Join(home, ".goaccord", "web_last_identity.txt")
+	return filepath.Join(apphome.BaseDirWithHome(home), "web_last_identity.txt")
 }
 
 func loadLastUsedIdentity(home string) string {
@@ -3352,11 +3353,11 @@ func saveIdentityKey(path string, priv ed25519.PrivateKey) error {
 }
 
 func e2eePathForKey(home string, keyPath string) string {
-	return filepath.Join(home, ".goaccord", "e2ee", "e2ee-"+filepath.Base(strings.TrimSpace(keyPath))+".json")
+	return filepath.Join(apphome.BaseDirWithHome(home), "e2ee", "e2ee-"+filepath.Base(strings.TrimSpace(keyPath))+".json")
 }
 
 func e2eeStatePathForKey(home string, keyPath string) string {
-	return filepath.Join(home, ".goaccord", "e2ee", "e2ee-state-"+filepath.Base(strings.TrimSpace(keyPath))+".json")
+	return filepath.Join(apphome.BaseDirWithHome(home), "e2ee", "e2ee-state-"+filepath.Base(strings.TrimSpace(keyPath))+".json")
 }
 
 func loadOrCreateE2EEKey(path string) (*ecdh.PrivateKey, string, error) {
@@ -3767,7 +3768,7 @@ func restoreIdentityFromRecovery(home string, reader *bufio.Reader) (string, err
 		return "", fmt.Errorf("invalid recovery seed length: got %d bytes, expected %d", len(seed), ed25519.SeedSize)
 	}
 	priv := ed25519.NewKeyFromSeed(seed)
-	idsDir := filepath.Join(home, ".goaccord", "identities")
+	idsDir := filepath.Join(apphome.BaseDirWithHome(home), "identities")
 	if err := os.MkdirAll(idsDir, 0o700); err != nil {
 		return "", err
 	}
@@ -3795,9 +3796,9 @@ func listIdentityCandidates(home string, currentPath string) []identityCandidate
 		paths = append(paths, p)
 	}
 	addPath(currentPath)
-	legacy := filepath.Join(home, ".goaccord", "ed25519_key.json")
+	legacy := filepath.Join(apphome.BaseDirWithHome(home), "ed25519_key.json")
 	addPath(legacy)
-	idsDir := filepath.Join(home, ".goaccord", "identities")
+	idsDir := filepath.Join(apphome.BaseDirWithHome(home), "identities")
 	if entries, err := os.ReadDir(idsDir); err == nil {
 		for _, e := range entries {
 			if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ".json") {
@@ -3879,7 +3880,7 @@ func promptIdentityPath(home string, currentPath string, conflictMode bool) (str
 		return p, nil
 	}
 	if n == createIdx {
-		idsDir := filepath.Join(home, ".goaccord", "identities")
+		idsDir := filepath.Join(apphome.BaseDirWithHome(home), "identities")
 		if err := os.MkdirAll(idsDir, 0o700); err != nil {
 			return "", err
 		}
@@ -4117,10 +4118,10 @@ func main() {
 		log.Fatalf("unable to resolve home directory: %v", err)
 	}
 	if strings.TrimSpace(*keyPath) == "" {
-		*keyPath = filepath.Join(home, ".goaccord", "ed25519_key.json")
+		*keyPath = filepath.Join(apphome.BaseDirWithHome(home), "ed25519_key.json")
 	}
 	if strings.TrimSpace(*contactsPath) == "" {
-		*contactsPath = filepath.Join(home, ".goaccord", "contacts.json")
+		*contactsPath = filepath.Join(apphome.BaseDirWithHome(home), "contacts.json")
 	}
 	var appMu sync.RWMutex
 	var client *webClient
@@ -4135,7 +4136,7 @@ func main() {
 		if strings.TrimSpace(*profilePath) != "" {
 			return strings.TrimSpace(*profilePath)
 		}
-		return filepath.Join(home, ".goaccord", "profiles", "profile-"+filepath.Base(strings.TrimSpace(kp))+".json")
+		return filepath.Join(apphome.BaseDirWithHome(home), "profiles", "profile-"+filepath.Base(strings.TrimSpace(kp))+".json")
 	}
 	tryAutoConnect := func(chosen string) error {
 		chosen = strings.TrimSpace(chosen)
@@ -4197,7 +4198,7 @@ func main() {
 			http.Redirect(w, r, "/app", http.StatusFound)
 			return
 		}
-		_ = loginTpl.Execute(w, map[string]any{"Title": "goAccord Login"})
+		_ = loginTpl.Execute(w, map[string]any{"Title": "Withera Login"})
 	})
 	mux.HandleFunc("/app", func(w http.ResponseWriter, r *http.Request) {
 		appMu.RLock()
@@ -4207,7 +4208,7 @@ func main() {
 			http.Redirect(w, r, "/login", http.StatusFound)
 			return
 		}
-		_ = appTpl.Execute(w, map[string]any{"Title": "goAccord Web Client"})
+		_ = appTpl.Execute(w, map[string]any{"Title": "Withera Web Client"})
 	})
 	mux.HandleFunc("/api/setup/status", func(w http.ResponseWriter, _ *http.Request) {
 		appMu.RLock()
@@ -4238,7 +4239,7 @@ func main() {
 		writeJSON(w, http.StatusOK, resp)
 	})
 	mux.HandleFunc("/api/setup/create", func(w http.ResponseWriter, _ *http.Request) {
-		idsDir := filepath.Join(home, ".goaccord", "identities")
+		idsDir := filepath.Join(apphome.BaseDirWithHome(home), "identities")
 		if err := os.MkdirAll(idsDir, 0o700); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
@@ -4316,7 +4317,7 @@ func main() {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid recovery seed length: got %d bytes, expected %d", len(seed), ed25519.SeedSize)})
 			return
 		}
-		idsDir := filepath.Join(home, ".goaccord", "identities")
+		idsDir := filepath.Join(apphome.BaseDirWithHome(home), "identities")
 		if err := os.MkdirAll(idsDir, 0o700); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return

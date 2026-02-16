@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"goaccord/internal/apphome"
 	"goaccord/internal/netsec"
 )
 
@@ -111,7 +112,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("unable to resolve home directory: %v", err)
 		}
-		*ownerKeyPath = filepath.Join(home, ".goaccord", "server_owner_key.json")
+		*ownerKeyPath = filepath.Join(apphome.BaseDirWithHome(home), "server_owner_key.json")
 	}
 	if strings.TrimSpace(*tlsCert) == "" {
 		*tlsCert = strings.TrimSpace(*ownerKeyPath) + ".tls.crt"
@@ -206,7 +207,7 @@ func main() {
 			if err != nil {
 				log.Fatalf("unable to resolve home directory: %v", err)
 			}
-			dbPath = filepath.Join(home, ".goaccord", "state", strings.ReplaceAll(s.id, ":", "_")+".sqlite")
+			dbPath = filepath.Join(apphome.BaseDirWithHome(home), "state", strings.ReplaceAll(s.id, ":", "_")+".sqlite")
 		}
 		store, err := openSQLiteStore(
 			dbPath,

@@ -1,4 +1,4 @@
-# Open Accord Nodes (Current State)
+# Withera Nodes (Current State)
 
 This document describes how nodes currently behave in this repository.
 

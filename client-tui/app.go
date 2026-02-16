@@ -28,6 +28,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"goaccord/internal/apphome"
 	"goaccord/internal/netsec"
 )
 
@@ -1105,7 +1106,7 @@ func (m model) View() string {
 		panelLabel = "channel:" + m.focusChannel
 	}
 
-	header := headerStyle.Render("goAccord TUI") + "  " +
+	header := headerStyle.Render("Withera TUI") + "  " +
 		statusStyle.Render("panel="+panelLabel+" login="+m.displayPeer(m.loginID)+" to="+emptyDash(m.displayPeer(m.to))+" group="+emptyDash(m.group)+" channel="+emptyDash(m.channel)+fmt.Sprintf(" contacts=%d friends=%d invites=%d unread=%d", len(m.contacts), len(m.friends), len(m.pendingInvites), m.totalUnread()))
 
 	if m.width > 0 {
@@ -2539,11 +2540,11 @@ func saveIdentityKey(path string, priv ed25519.PrivateKey) error {
 }
 
 func e2eePathForKey(home string, keyPath string) string {
-	return filepath.Join(home, ".goaccord", "e2ee", "e2ee-"+filepath.Base(strings.TrimSpace(keyPath))+".json")
+	return filepath.Join(apphome.BaseDirWithHome(home), "e2ee", "e2ee-"+filepath.Base(strings.TrimSpace(keyPath))+".json")
 }
 
 func e2eeStatePathForKey(home string, keyPath string) string {
-	return filepath.Join(home, ".goaccord", "e2ee", "e2ee-state-"+filepath.Base(strings.TrimSpace(keyPath))+".json")
+	return filepath.Join(apphome.BaseDirWithHome(home), "e2ee", "e2ee-state-"+filepath.Base(strings.TrimSpace(keyPath))+".json")
 }
 
 func loadOrCreateE2EEKey(path string) (*ecdh.PrivateKey, string, error) {
@@ -2760,7 +2761,7 @@ type identityCandidate struct {
 }
 
 func profilePathForKey(home string, keyPath string) string {
-	return filepath.Join(home, ".goaccord", "profiles", "profile-"+filepath.Base(strings.TrimSpace(keyPath))+".json")
+	return filepath.Join(apphome.BaseDirWithHome(home), "profiles", "profile-"+filepath.Base(strings.TrimSpace(keyPath))+".json")
 }
 
 func writeFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
@@ -2956,7 +2957,7 @@ func restoreIdentityFromRecovery(home string, reader *bufio.Reader) (string, err
 		return "", fmt.Errorf("invalid recovery seed length: got %d bytes, expected %d", len(seed), ed25519.SeedSize)
 	}
 	priv := ed25519.NewKeyFromSeed(seed)
-	idsDir := filepath.Join(home, ".goaccord", "identities")
+	idsDir := filepath.Join(apphome.BaseDirWithHome(home), "identities")
 	if err := os.MkdirAll(idsDir, 0o700); err != nil {
 		return "", err
 	}
@@ -2985,10 +2986,10 @@ func listIdentityCandidates(home string, currentPath string) []identityCandidate
 	}
 	addPath(currentPath)
 
-	legacy := filepath.Join(home, ".goaccord", "ed25519_key.json")
+	legacy := filepath.Join(apphome.BaseDirWithHome(home), "ed25519_key.json")
 	addPath(legacy)
 
-	idsDir := filepath.Join(home, ".goaccord", "identities")
+	idsDir := filepath.Join(apphome.BaseDirWithHome(home), "identities")
 	if entries, err := os.ReadDir(idsDir); err == nil {
 		for _, e := range entries {
 			if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ".json") {
@@ -3070,7 +3071,7 @@ func promptIdentityPath(home string, currentPath string, conflictMode bool) (str
 		return p, nil
 	}
 	if n == createIdx {
-		idsDir := filepath.Join(home, ".goaccord", "identities")
+		idsDir := filepath.Join(apphome.BaseDirWithHome(home), "identities")
 		if err := os.MkdirAll(idsDir, 0o700); err != nil {
 			return "", err
 		}

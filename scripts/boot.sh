@@ -23,8 +23,8 @@ CLIENT_PID_DIR="$CLIENTS_RUNTIME_DIR/pids"
 NODE_INSTANCES_DIR="$NODES_RUNTIME_DIR/instances"
 CLIENT_INSTANCES_DIR="$CLIENTS_RUNTIME_DIR/instances"
 CLIENT_LOG_DIR="$CLIENTS_RUNTIME_DIR/logs"
-NODE_BIN="$BIN_DIR/goaccord-node"
-CLIENT_WEB_BIN="$BIN_DIR/goaccord-client-web"
+NODE_BIN="$BIN_DIR/withera-node"
+CLIENT_WEB_BIN="$BIN_DIR/withera-client-web"
 
 mkdir -p "$NODE_PID_DIR" "$CLIENT_PID_DIR" "$NODE_INSTANCES_DIR" "$CLIENT_INSTANCES_DIR" "$CLIENT_LOG_DIR" "$BIN_DIR"
 
@@ -205,9 +205,9 @@ start_client() {
   local log_file="$CLIENT_LOG_DIR/$sid.log"
   local client_dir="$CLIENT_INSTANCES_DIR/$sid"
   local client_home="$client_dir/home"
-  local client_key="$client_home/.goaccord/ed25519_key.json"
-  local client_contacts="$client_home/.goaccord/contacts.json"
-  local client_profile="$client_home/.goaccord/profiles/profile-ed25519_key.json"
+  local client_key="$client_home/.withera/ed25519_key.json"
+  local client_contacts="$client_home/.withera/contacts.json"
+  local client_profile="$client_home/.withera/profiles/profile-ed25519_key.json"
 
   stop_from_pid_file "$sid" "$pid_file"
 
@@ -227,7 +227,7 @@ start_client() {
   echo "started $sid (pid $pid)"
   echo "  web: $web_url"
   echo "  node: $node_addr"
-  echo "  data: $client_home/.goaccord"
+  echo "  data: $client_home/.withera"
 }
 
 echo "building node binary..."

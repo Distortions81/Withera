@@ -1,6 +1,6 @@
 # client-tui
 
-Interactive terminal UI client for GoAccord.
+Interactive terminal UI client for Withera.
 
 ## Library stack
 - `github.com/charmbracelet/bubbletea`
@@ -14,7 +14,7 @@ go run ./client-tui -addr 127.0.0.1:9101
 
 Optional flags:
 - `-key <path>`: client private key file
-- `-contacts <path>`: contacts file (default `~/.goaccord/contacts.json`)
+- `-contacts <path>`: contacts file (default `~/.withera/contacts.json`, or legacy `~/.goaccord/contacts.json`)
 - `-to <login_id|alias>`: initial recipient
 - `-group <name>`: initial group label
 - `-channel <name>`: initial channel label
@@ -55,4 +55,4 @@ Optional flags:
 ## UI state persistence
 - TUI now persists known servers/channels and last chat context (DM or group/channel) to `<profile>.ui.json`.
 - This mirrors web UI behavior so context is restored on restart.
-- TUI persists verified peer E2EE keys and seen friend-key nonces under `~/.goaccord/e2ee/`.
+- TUI persists verified peer E2EE keys and seen friend-key nonces under `~/.withera/e2ee/` (or legacy `~/.goaccord/e2ee/`).

@@ -1,6 +1,6 @@
-# Open Accord
+# Withera
 
-Open Accord is a decentralized chat prototype with these components:
+Withera is a decentralized chat prototype with these components:
 - `node/`: network nodes that authenticate users/peers, relay messages, and optionally persist selected state.
 - `client-web/`: local web client served from a local Go process.
 - `client-tui/`: terminal client.

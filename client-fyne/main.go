@@ -28,6 +28,7 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/widget"
+	"goaccord/internal/apphome"
 	"goaccord/internal/netsec"
 )
 
@@ -525,7 +526,7 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
 }
 
 func profilePathForKey(home string, keyPath string) string {
-	return filepath.Join(home, ".goaccord", "profiles", "profile-"+filepath.Base(strings.TrimSpace(keyPath))+".json")
+	return filepath.Join(apphome.BaseDirWithHome(home), "profiles", "profile-"+filepath.Base(strings.TrimSpace(keyPath))+".json")
 }
 
 func loadDisplayName(home string, keyPath string) string {
@@ -582,9 +583,9 @@ func listIdentityCandidates(home string, currentPath string) []identityCandidate
 		paths = append(paths, p)
 	}
 	addPath(currentPath)
-	legacy := filepath.Join(home, ".goaccord", "ed25519_key.json")
+	legacy := filepath.Join(apphome.BaseDirWithHome(home), "ed25519_key.json")
 	addPath(legacy)
-	idsDir := filepath.Join(home, ".goaccord", "identities")
+	idsDir := filepath.Join(apphome.BaseDirWithHome(home), "identities")
 	if entries, err := os.ReadDir(idsDir); err == nil {
 		for _, e := range entries {
 			if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ".json") {
@@ -877,9 +878,9 @@ func sendRaw(s *appState, p Packet) error {
 
 func main() {
 	home, _ := os.UserHomeDir()
-	defaultKeyPath := filepath.Join(home, ".goaccord", "ed25519_key.json")
+	defaultKeyPath := filepath.Join(apphome.BaseDirWithHome(home), "ed25519_key.json")
 
-	fy := app.NewWithID("io.goaccord.client.fyne")
+	fy := app.NewWithID("io.withera.client.fyne")
 	state := newAppState()
 
 	showLoginWindow(fy, home, defaultKeyPath, state)
@@ -887,10 +888,10 @@ func main() {
 }
 
 func showLoginWindow(fy fyne.App, home string, defaultKeyPath string, state *appState) {
-	w := fy.NewWindow("goAccord Login")
+	w := fy.NewWindow("Withera Login")
 	w.Resize(fyne.NewSize(880, 620))
 
-	title := widget.NewRichTextFromMarkdown("# Open Accord")
+	title := widget.NewRichTextFromMarkdown("# Withera")
 	subtitle := widget.NewLabel("Choose an identity, or create/restore one, then connect to a node.")
 
 	serverEntry := widget.NewEntry()
@@ -966,7 +967,7 @@ func showLoginWindow(fy fyne.App, home string, defaultKeyPath string, state *app
 	}
 
 	createBtn := widget.NewButton("Create Identity", func() {
-		idsDir := filepath.Join(home, ".goaccord", "identities")
+		idsDir := filepath.Join(apphome.BaseDirWithHome(home), "identities")
 		if err := os.MkdirAll(idsDir, 0o700); err != nil {
 			showError(err)
 			return
@@ -1019,7 +1020,7 @@ func showLoginWindow(fy fyne.App, home string, defaultKeyPath string, state *app
 				return
 			}
 			priv := ed25519.NewKeyFromSeed(seed)
-			idsDir := filepath.Join(home, ".goaccord", "identities")
+			idsDir := filepath.Join(apphome.BaseDirWithHome(home), "identities")
 			if err := os.MkdirAll(idsDir, 0o700); err != nil {
 				showError(err)
 				return
@@ -1133,7 +1134,7 @@ func showLoginWindow(fy fyne.App, home string, defaultKeyPath string, state *app
 }
 
 func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, state *appState, events <-chan netMsg, loginWindow fyne.Window) {
-	w := fy.NewWindow("goAccord")
+	w := fy.NewWindow("Withera")
 	w.Resize(fyne.NewSize(1180, 760))
 	_, _, ownLoginID := state.snapshotConn()
 	ownDisplayName, ownProfileText := loadLocalProfile(home, keyPath)

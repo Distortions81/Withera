@@ -1,4 +1,4 @@
-# Open Accord Protocol (Current)
+# Withera Protocol (Current)
 
 This document describes the protocol currently implemented in `node/app.go`.
 It is implementation-first and may change during prototype phase.

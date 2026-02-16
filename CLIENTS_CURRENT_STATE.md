@@ -1,4 +1,4 @@
-# Open Accord Clients (Current State)
+# Withera Clients (Current State)
 
 This document describes the current shipped client implementations in this repository.
 
@@ -30,7 +30,7 @@ Both clients support DM body encryption with X25519-based E2EE keys:
 
 ## Local data persisted by clients
 
-Common local persistence under `~/.goaccord/` includes:
+Common local persistence under `~/.withera/` (or legacy `~/.goaccord/`) includes:
 - Identity key files (Ed25519)
 - E2EE key file(s) and E2EE state (verified peer keys + seen nonces)
 - Contacts/aliases
