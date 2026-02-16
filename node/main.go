@@ -45,6 +45,7 @@ func main() {
 	maxChannelsPerGroup := flag.Int("max-channels-per-group", defaultMaxChannelsPerGroup, "maximum channels allowed per group")
 	maxGroupNameLen := flag.Int("max-group-name-len", defaultMaxGroupNameRunes, "maximum group name length in characters")
 	maxChannelNameLen := flag.Int("max-channel-name-len", defaultMaxChannelNameRunes, "maximum channel name length in characters")
+	maxPrivateChannelMembers := flag.Int("max-private-channel-members", defaultMaxPrivateChannelMembers, "maximum members allowed in an invite-only channel")
 	statsHTTP := flag.Bool("stats-http", true, "enable local HTTP stats page")
 	statsAddr := flag.String("stats-addr", "", "stats HTTP listen address (default derived from -listen)")
 	tlsCert := flag.String("tls-cert", "", "TLS certificate file path (auto-generated if missing)")
@@ -62,37 +63,38 @@ func main() {
 			log.Fatalf("config load failed: %v", err)
 		}
 		targets := map[string]any{
-			"listen":                  listenAddr,
-			"advertise":               advertiseAddr,
-			"owner":                   ownerClaim,
-			"sid":                     localSID,
-			"key":                     ownerKeyPath,
-			"peers":                   peersCSV,
-			"max-peers":               maxPeers,
-			"max-msg-bytes":           maxMsgBytes,
-			"max-uncompressed-bytes":  maxUncompressedBytes,
-			"max-expand-ratio":        maxExpandRatio,
-			"max-msgs-per-sec":        maxMsgsPerSec,
-			"burst":                   burstMessages,
-			"max-seen":                maxSeen,
-			"max-known-addrs":         maxKnownAddrs,
-			"known-addr-ttl":          knownAddrTTLStr,
-			"relay":                   relayEnabled,
-			"client-mode":             clientMode,
-			"client-allow":            clientAllowCSV,
-			"persistence-mode":        persistenceMode,
-			"persistence-db":          persistenceDB,
-			"persist-auto-host":       persistAutoHost,
-			"persist-public-topology": persistPublicTopology,
-			"persist-chat-messages":   persistChatMessages,
-			"max-pending-msgs":        maxPendingMsgs,
-			"max-channels-per-group":  maxChannelsPerGroup,
-			"max-group-name-len":      maxGroupNameLen,
-			"max-channel-name-len":    maxChannelNameLen,
-			"stats-http":              statsHTTP,
-			"stats-addr":              statsAddr,
-			"tls-cert":                tlsCert,
-			"tls-key":                 tlsKey,
+			"listen":                      listenAddr,
+			"advertise":                   advertiseAddr,
+			"owner":                       ownerClaim,
+			"sid":                         localSID,
+			"key":                         ownerKeyPath,
+			"peers":                       peersCSV,
+			"max-peers":                   maxPeers,
+			"max-msg-bytes":               maxMsgBytes,
+			"max-uncompressed-bytes":      maxUncompressedBytes,
+			"max-expand-ratio":            maxExpandRatio,
+			"max-msgs-per-sec":            maxMsgsPerSec,
+			"burst":                       burstMessages,
+			"max-seen":                    maxSeen,
+			"max-known-addrs":             maxKnownAddrs,
+			"known-addr-ttl":              knownAddrTTLStr,
+			"relay":                       relayEnabled,
+			"client-mode":                 clientMode,
+			"client-allow":                clientAllowCSV,
+			"persistence-mode":            persistenceMode,
+			"persistence-db":              persistenceDB,
+			"persist-auto-host":           persistAutoHost,
+			"persist-public-topology":     persistPublicTopology,
+			"persist-chat-messages":       persistChatMessages,
+			"max-pending-msgs":            maxPendingMsgs,
+			"max-channels-per-group":      maxChannelsPerGroup,
+			"max-group-name-len":          maxGroupNameLen,
+			"max-channel-name-len":        maxChannelNameLen,
+			"max-private-channel-members": maxPrivateChannelMembers,
+			"stats-http":                  statsHTTP,
+			"stats-addr":                  statsAddr,
+			"tls-cert":                    tlsCert,
+			"tls-key":                     tlsKey,
 		}
 		if err := applyConfigToFlags(cfg, flag.CommandLine, visited, targets); err != nil {
 			log.Fatalf("config apply failed: %v", err)
@@ -183,9 +185,13 @@ func main() {
 	if *maxChannelNameLen <= 0 {
 		log.Fatalf("invalid -max-channel-name-len: must be > 0")
 	}
+	if *maxPrivateChannelMembers <= 0 {
+		log.Fatalf("invalid -max-private-channel-members: must be > 0")
+	}
 	s.maxChannelsPerGroup = *maxChannelsPerGroup
 	s.maxGroupNameRunes = *maxGroupNameLen
 	s.maxChannelNameRunes = *maxChannelNameLen
+	s.maxPrivateChannelMembers = *maxPrivateChannelMembers
 	pmode := strings.ToLower(strings.TrimSpace(*persistenceMode))
 	switch pmode {
 	case persistenceModeLive, persistenceModePersist:
@@ -281,7 +287,7 @@ func main() {
 	log.Printf("tls required cert=%s key=%s", *tlsCert, *tlsKey)
 	log.Printf("server %q listening on %s", s.id, *listenAddr)
 	log.Printf("owner login_id %q (key: %s)", ownerLoginID, *ownerKeyPath)
-	log.Printf("limits: max-msg-bytes=%d max-uncompressed-bytes=%d max-expand-ratio=%d max-msgs-per-sec=%d burst=%d max-seen=%d max-known-addrs=%d known-addr-ttl=%s max-channels-per-group=%d max-group-name-len=%d max-channel-name-len=%d", s.maxMessageBytes, s.maxUncompressedBytes, s.maxExpandRatio, s.maxMsgsPerSec, s.burstMessages, s.maxSeenEntries, s.maxKnownAddrs, knownAddrTTL, s.maxChannelsPerGroup, s.maxGroupNameRunes, s.maxChannelNameRunes)
+	log.Printf("limits: max-msg-bytes=%d max-uncompressed-bytes=%d max-expand-ratio=%d max-msgs-per-sec=%d burst=%d max-seen=%d max-known-addrs=%d known-addr-ttl=%s max-channels-per-group=%d max-group-name-len=%d max-channel-name-len=%d max-private-channel-members=%d", s.maxMessageBytes, s.maxUncompressedBytes, s.maxExpandRatio, s.maxMsgsPerSec, s.burstMessages, s.maxSeenEntries, s.maxKnownAddrs, knownAddrTTL, s.maxChannelsPerGroup, s.maxGroupNameRunes, s.maxChannelNameRunes, s.maxPrivateChannelMembers)
 	if s.advertiseAddr != "" {
 		log.Printf("advertising as %s", s.advertiseAddr)
 	}

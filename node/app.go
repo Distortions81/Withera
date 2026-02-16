@@ -53,6 +53,7 @@ const (
 	defaultMaxChannelsPerGroup         = 64
 	defaultMaxGroupNameRunes           = 64
 	defaultMaxChannelNameRunes         = 48
+	defaultMaxPrivateChannelMembers    = 256
 	defaultMaxPersistedFriends         = 256
 	defaultMaxPersistedChannelsPerUser = 512
 	defaultProfileCacheTTL             = 90 * 24 * time.Hour
@@ -172,10 +173,11 @@ type rateLimiter struct {
 }
 
 type ChannelState struct {
-	Owner   string
-	Public  bool
-	Members map[string]struct{}
-	Invites map[string]string
+	Owner            string
+	Public           bool
+	PrivateMemberCap int
+	Members          map[string]struct{}
+	Invites          map[string]string
 }
 
 type userRoute struct {
@@ -212,31 +214,32 @@ func (rl *rateLimiter) Allow() bool {
 }
 
 type Server struct {
-	id                    string
-	ownerPubKeyB64        string
-	ownerPriv             ed25519.PrivateKey
-	advertiseAddr         string
-	maxPeerSessions       int
-	maxMessageBytes       int
-	maxUncompressedBytes  int
-	maxExpandRatio        int
-	maxMsgsPerSec         int
-	burstMessages         int
-	maxSeenEntries        int
-	maxKnownAddrs         int
-	knownAddrTTL          time.Duration
-	relayEnabled          bool
-	clientMode            string
-	clientAllow           map[string]struct{}
-	persistenceMode       string
-	persistAutoHost       bool
-	persistPublicTopology bool
-	persistChatMessages   bool
-	maxPendingMsgs        int
-	maxChannelsPerGroup   int
-	maxGroupNameRunes     int
-	maxChannelNameRunes   int
-	store                 *sqliteStore
+	id                       string
+	ownerPubKeyB64           string
+	ownerPriv                ed25519.PrivateKey
+	advertiseAddr            string
+	maxPeerSessions          int
+	maxMessageBytes          int
+	maxUncompressedBytes     int
+	maxExpandRatio           int
+	maxMsgsPerSec            int
+	burstMessages            int
+	maxSeenEntries           int
+	maxKnownAddrs            int
+	knownAddrTTL             time.Duration
+	relayEnabled             bool
+	clientMode               string
+	clientAllow              map[string]struct{}
+	persistenceMode          string
+	persistAutoHost          bool
+	persistPublicTopology    bool
+	persistChatMessages      bool
+	maxPendingMsgs           int
+	maxChannelsPerGroup      int
+	maxGroupNameRunes        int
+	maxChannelNameRunes      int
+	maxPrivateChannelMembers int
+	store                    *sqliteStore
 
 	mu                  sync.RWMutex
 	users               map[string]map[*Conn]struct{}
@@ -283,49 +286,50 @@ func NewServer(id, ownerPubKeyB64 string, ownerPriv ed25519.PrivateKey, advertis
 	}
 
 	return &Server{
-		id:                    id,
-		ownerPubKeyB64:        ownerPubKeyB64,
-		ownerPriv:             ownerPriv,
-		advertiseAddr:         normalizeAddr(advertiseAddr),
-		maxPeerSessions:       maxPeerSessions,
-		maxMessageBytes:       maxMessageBytes,
-		maxUncompressedBytes:  defaultMaxUncompressedBytes,
-		maxExpandRatio:        defaultMaxExpandRatio,
-		maxMsgsPerSec:         maxMsgsPerSec,
-		burstMessages:         burstMessages,
-		maxSeenEntries:        maxSeenEntries,
-		maxKnownAddrs:         maxKnownAddrs,
-		knownAddrTTL:          knownAddrTTL,
-		relayEnabled:          true,
-		clientMode:            clientModePublic,
-		clientAllow:           make(map[string]struct{}),
-		persistenceMode:       persistenceModeLive,
-		persistAutoHost:       true,
-		persistPublicTopology: false,
-		persistChatMessages:   false,
-		maxPendingMsgs:        500,
-		maxChannelsPerGroup:   defaultMaxChannelsPerGroup,
-		maxGroupNameRunes:     defaultMaxGroupNameRunes,
-		maxChannelNameRunes:   defaultMaxChannelNameRunes,
-		users:                 make(map[string]map[*Conn]struct{}),
-		peers:                 make(map[string]*Peer),
-		seen:                  make(map[string]time.Time),
-		knownAddrs:            make(map[string]time.Time),
-		dialing:               make(map[string]struct{}),
-		peerScore:             make(map[string]int),
-		peerBanned:            make(map[string]time.Time),
-		peerBanScore:          defaultPeerBanScore,
-		peerBanFor:            defaultPeerBanFor,
-		friends:               make(map[string]map[string]struct{}),
-		friendAdds:            make(map[string]map[string]struct{}),
-		channels:              make(map[string]*ChannelState),
-		profiles:              make(map[string]profilePayload),
-		profileUpdated:        make(map[string]int64),
-		groupProfiles:         make(map[string]groupProfilePayload),
-		groupProfileUpdated:   make(map[string]int64),
-		presence:              make(map[string]presenceState),
-		routes:                make(map[string]userRoute),
-		startedAt:             time.Now(),
+		id:                       id,
+		ownerPubKeyB64:           ownerPubKeyB64,
+		ownerPriv:                ownerPriv,
+		advertiseAddr:            normalizeAddr(advertiseAddr),
+		maxPeerSessions:          maxPeerSessions,
+		maxMessageBytes:          maxMessageBytes,
+		maxUncompressedBytes:     defaultMaxUncompressedBytes,
+		maxExpandRatio:           defaultMaxExpandRatio,
+		maxMsgsPerSec:            maxMsgsPerSec,
+		burstMessages:            burstMessages,
+		maxSeenEntries:           maxSeenEntries,
+		maxKnownAddrs:            maxKnownAddrs,
+		knownAddrTTL:             knownAddrTTL,
+		relayEnabled:             true,
+		clientMode:               clientModePublic,
+		clientAllow:              make(map[string]struct{}),
+		persistenceMode:          persistenceModeLive,
+		persistAutoHost:          true,
+		persistPublicTopology:    false,
+		persistChatMessages:      false,
+		maxPendingMsgs:           500,
+		maxChannelsPerGroup:      defaultMaxChannelsPerGroup,
+		maxGroupNameRunes:        defaultMaxGroupNameRunes,
+		maxChannelNameRunes:      defaultMaxChannelNameRunes,
+		maxPrivateChannelMembers: defaultMaxPrivateChannelMembers,
+		users:                    make(map[string]map[*Conn]struct{}),
+		peers:                    make(map[string]*Peer),
+		seen:                     make(map[string]time.Time),
+		knownAddrs:               make(map[string]time.Time),
+		dialing:                  make(map[string]struct{}),
+		peerScore:                make(map[string]int),
+		peerBanned:               make(map[string]time.Time),
+		peerBanScore:             defaultPeerBanScore,
+		peerBanFor:               defaultPeerBanFor,
+		friends:                  make(map[string]map[string]struct{}),
+		friendAdds:               make(map[string]map[string]struct{}),
+		channels:                 make(map[string]*ChannelState),
+		profiles:                 make(map[string]profilePayload),
+		profileUpdated:           make(map[string]int64),
+		groupProfiles:            make(map[string]groupProfilePayload),
+		groupProfileUpdated:      make(map[string]int64),
+		presence:                 make(map[string]presenceState),
+		routes:                   make(map[string]userRoute),
+		startedAt:                time.Now(),
 	}
 }
 
@@ -1431,6 +1435,69 @@ func splitChannelKey(key string) (group string, channel string) {
 	return key[:i], key[i+1:]
 }
 
+func (s *Server) isGroupMemberLocked(group string, loginID string) bool {
+	group = strings.TrimSpace(group)
+	loginID = strings.TrimSpace(loginID)
+	if group == "" || loginID == "" {
+		return false
+	}
+	for key, ch := range s.channels {
+		g, _ := splitChannelKey(key)
+		if g != group {
+			continue
+		}
+		if _, ok := ch.Members[loginID]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) groupMembersLocked(group string) map[string]struct{} {
+	group = strings.TrimSpace(group)
+	out := make(map[string]struct{})
+	if group == "" {
+		return out
+	}
+	for key, ch := range s.channels {
+		g, _ := splitChannelKey(key)
+		if g != group {
+			continue
+		}
+		for member := range ch.Members {
+			out[member] = struct{}{}
+		}
+	}
+	return out
+}
+
+func (s *Server) addChannelMemberLocked(ch *ChannelState, loginID string) error {
+	if ch == nil {
+		return fmt.Errorf("channel missing")
+	}
+	loginID = strings.TrimSpace(loginID)
+	if loginID == "" {
+		return fmt.Errorf("member id missing")
+	}
+	if ch.Members == nil {
+		ch.Members = make(map[string]struct{})
+	}
+	if _, ok := ch.Members[loginID]; ok {
+		return nil
+	}
+	if !ch.Public {
+		capVal := ch.PrivateMemberCap
+		if capVal <= 0 {
+			capVal = s.maxPrivateChannelMembers
+		}
+		if capVal > 0 && len(ch.Members) >= capVal {
+			return fmt.Errorf("private channel member cap reached (%d)", capVal)
+		}
+	}
+	ch.Members[loginID] = struct{}{}
+	return nil
+}
+
 func (s *Server) isFriend(a, b string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -1481,11 +1548,11 @@ func (s *Server) loadPersistedFriendEdges() {
 	log.Printf("loaded persisted friend edges: %d", len(edges))
 }
 
-func (s *Server) persistChannelState(group, channel, owner string, public bool) {
+func (s *Server) persistChannelState(group, channel, owner string, public bool, privateCap int) {
 	if s.persistenceMode != persistenceModePersist || s.store == nil {
 		return
 	}
-	if err := s.store.rememberChannelState(group, channel, owner, public); err != nil {
+	if err := s.store.rememberChannelState(group, channel, owner, public, privateCap); err != nil {
 		log.Printf("persist channel state failed: %s/%s owner=%s: %v", group, channel, owner, err)
 	}
 }
@@ -1529,10 +1596,11 @@ func (s *Server) loadPersistedChannelsAndMemberships() {
 		ch := s.channels[key]
 		if ch == nil {
 			ch = &ChannelState{
-				Owner:   st.Owner,
-				Public:  st.Public,
-				Members: make(map[string]struct{}),
-				Invites: make(map[string]string),
+				Owner:            st.Owner,
+				Public:           st.Public,
+				PrivateMemberCap: st.PrivateMemberCap,
+				Members:          make(map[string]struct{}),
+				Invites:          make(map[string]string),
 			}
 			s.channels[key] = ch
 			continue
@@ -1541,16 +1609,26 @@ func (s *Server) loadPersistedChannelsAndMemberships() {
 			ch.Owner = st.Owner
 		}
 		ch.Public = ch.Public || st.Public
+		if !ch.Public {
+			if st.PrivateMemberCap > 0 {
+				ch.PrivateMemberCap = st.PrivateMemberCap
+			} else if ch.PrivateMemberCap <= 0 {
+				ch.PrivateMemberCap = s.maxPrivateChannelMembers
+			}
+		} else {
+			ch.PrivateMemberCap = 0
+		}
 	}
 	for _, m := range memberships {
 		key := channelKey(m.Group, m.Channel)
 		ch := s.channels[key]
 		if ch == nil {
 			ch = &ChannelState{
-				Owner:   "",
-				Public:  true,
-				Members: make(map[string]struct{}),
-				Invites: make(map[string]string),
+				Owner:            "",
+				Public:           true,
+				PrivateMemberCap: 0,
+				Members:          make(map[string]struct{}),
+				Invites:          make(map[string]string),
 			}
 			s.channels[key] = ch
 		}
@@ -1782,7 +1860,17 @@ func (s *Server) handleChannelCreate(p Packet) {
 	s.mu.Lock()
 	ch := s.channels[key]
 	if ch == nil {
-		ch = &ChannelState{Owner: p.From, Public: p.Public, Members: make(map[string]struct{}), Invites: make(map[string]string)}
+		privateCap := 0
+		if !p.Public {
+			privateCap = s.maxPrivateChannelMembers
+		}
+		ch = &ChannelState{
+			Owner:            p.From,
+			Public:           p.Public,
+			PrivateMemberCap: privateCap,
+			Members:          make(map[string]struct{}),
+			Invites:          make(map[string]string),
+		}
 		if s.maxChannelsPerGroup > 0 {
 			groupCount := 0
 			for existingKey := range s.channels {
@@ -1802,19 +1890,28 @@ func (s *Server) handleChannelCreate(p Packet) {
 			if existingGroup != group {
 				continue
 			}
+			if !ch.Public {
+				continue
+			}
 			for member := range existing.Members {
 				ch.Members[member] = struct{}{}
 			}
 		}
 		s.channels[key] = ch
 	}
-	ch.Members[p.From] = struct{}{}
+	if err := s.addChannelMemberLocked(ch, p.From); err != nil {
+		s.mu.Unlock()
+		s.sendProtocolError(p.From, "channel_create failed: "+err.Error())
+		return
+	}
 	if p.Public {
 		ch.Public = true
+		ch.PrivateMemberCap = 0
 	}
 	publicChannel := ch.Public
+	privateCap := ch.PrivateMemberCap
 	s.mu.Unlock()
-	s.persistChannelState(group, channel, p.From, publicChannel)
+	s.persistChannelState(group, channel, p.From, publicChannel, privateCap)
 	s.persistUserChannelMembership(p.From, group, channel)
 	s.notifyUserOrQueue(Packet{Type: "channel_update", From: p.From, To: p.From, Group: group, Channel: channel, Public: publicChannel, Body: "created"})
 }
@@ -1832,6 +1929,7 @@ func (s *Server) handleChannelInvite(p Packet) {
 	channels := make([]*ChannelState, 0)
 	channelNames := make([]string, 0)
 	inviterIsMember := false
+	inviterInGroup := false
 	inviterOwnsAny := false
 	groupIsPublic := false
 	for key, ch := range s.channels {
@@ -1843,6 +1941,7 @@ func (s *Server) handleChannelInvite(p Packet) {
 		channelNames = append(channelNames, chName)
 		if _, ok := ch.Members[p.From]; ok {
 			inviterIsMember = true
+			inviterInGroup = true
 		}
 		if strings.TrimSpace(ch.Owner) == p.From {
 			inviterOwnsAny = true
@@ -1851,7 +1950,7 @@ func (s *Server) handleChannelInvite(p Packet) {
 			groupIsPublic = true
 		}
 	}
-	canInvite := groupIsPublic || inviterIsMember
+	canInvite := groupIsPublic || inviterInGroup
 	if !groupIsPublic && inviterIsMember && !inviterOwnsAny {
 		links := s.friends[p.From]
 		if links == nil {
@@ -1908,6 +2007,7 @@ func (s *Server) handleChannelJoin(p Packet) {
 	groupChannels := make([]*ChannelState, 0)
 	groupChannelNames := make([]string, 0)
 	groupInvited := false
+	groupMember := false
 	for existingKey, existing := range s.channels {
 		g, chName := splitChannelKey(existingKey)
 		if g != group {
@@ -1917,6 +2017,9 @@ func (s *Server) handleChannelJoin(p Packet) {
 		groupChannelNames = append(groupChannelNames, chName)
 		if _, ok := existing.Invites[p.From]; ok {
 			groupInvited = true
+		}
+		if _, ok := existing.Members[p.From]; ok {
+			groupMember = true
 		}
 	}
 	if len(groupChannels) == 0 {
@@ -1931,7 +2034,9 @@ func (s *Server) handleChannelJoin(p Packet) {
 			chName := strings.TrimSpace(groupChannelNames[i])
 			_, member := gc.Members[p.From]
 			if member || gc.Public {
-				gc.Members[p.From] = struct{}{}
+				if err := s.addChannelMemberLocked(gc, p.From); err != nil {
+					continue
+				}
 				delete(gc.Invites, p.From)
 				joined = append(joined, Packet{
 					Type:    "channel_joined",
@@ -1969,11 +2074,34 @@ func (s *Server) handleChannelJoin(p Packet) {
 	}
 	_, member := ch.Members[p.From]
 	_, invited := ch.Invites[p.From]
-	if member || ch.Public || invited || groupInvited {
+	if member || (ch.Public && groupMember) || ch.Public || invited || groupInvited {
 		joinedChannels := make([]Packet, 0, len(groupChannelNames))
 		if invited || groupInvited {
+			for _, gc := range groupChannels {
+				if _, exists := gc.Members[p.From]; exists {
+					continue
+				}
+				if gc.Public {
+					continue
+				}
+				capVal := gc.PrivateMemberCap
+				if capVal <= 0 {
+					capVal = s.maxPrivateChannelMembers
+				}
+				if capVal > 0 && len(gc.Members) >= capVal {
+					s.mu.Unlock()
+					s.sendProtocolError(p.From, "channel_join failed: private channel member cap reached")
+					return
+				}
+			}
+			for _, gc := range groupChannels {
+				if err := s.addChannelMemberLocked(gc, p.From); err != nil {
+					s.mu.Unlock()
+					s.sendProtocolError(p.From, "channel_join failed: "+err.Error())
+					return
+				}
+			}
 			for i, gc := range groupChannels {
-				gc.Members[p.From] = struct{}{}
 				delete(gc.Invites, p.From)
 				joinedChannels = append(joinedChannels, Packet{
 					Type:    "channel_joined",
@@ -1986,7 +2114,11 @@ func (s *Server) handleChannelJoin(p Packet) {
 				})
 			}
 		} else {
-			ch.Members[p.From] = struct{}{}
+			if err := s.addChannelMemberLocked(ch, p.From); err != nil {
+				s.mu.Unlock()
+				s.sendProtocolError(p.From, "channel_join failed: "+err.Error())
+				return
+			}
 			delete(ch.Invites, p.From)
 			joinedChannels = append(joinedChannels, Packet{
 				Type:    "channel_joined",
@@ -2042,13 +2174,35 @@ func (s *Server) handleChannelSend(p Packet) {
 		s.sendProtocolError(p.From, "channel_send failed: unknown channel")
 		return
 	}
-	if _, ok := ch.Members[p.From]; !ok {
+	_, member := ch.Members[p.From]
+	groupMembers := make(map[string]struct{})
+	if ch.Public {
+		groupMembers = s.groupMembersLocked(group)
+		if _, ok := groupMembers[p.From]; !ok && !member {
+			s.mu.RUnlock()
+			s.sendProtocolError(p.From, "channel_send failed: not a group member")
+			return
+		}
+	} else if !member {
 		s.mu.RUnlock()
 		s.sendProtocolError(p.From, "channel_send failed: not a member")
 		return
 	}
-	members := make([]string, 0, len(ch.Members))
-	for m := range ch.Members {
+	targetSet := make(map[string]struct{})
+	if ch.Public {
+		for m := range groupMembers {
+			targetSet[m] = struct{}{}
+		}
+		for m := range ch.Members {
+			targetSet[m] = struct{}{}
+		}
+	} else {
+		for m := range ch.Members {
+			targetSet[m] = struct{}{}
+		}
+	}
+	members := make([]string, 0, len(targetSet))
+	for m := range targetSet {
 		members = append(members, m)
 	}
 	s.mu.RUnlock()

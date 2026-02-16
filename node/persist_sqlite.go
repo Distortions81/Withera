@@ -144,6 +144,7 @@ func (s *sqliteStore) initSchema(serverID string, ownerID string) error {
 			channel_name TEXT NOT NULL,
 			owner_login_id TEXT NOT NULL,
 			is_public INTEGER NOT NULL,
+			private_member_cap INTEGER NOT NULL DEFAULT 256,
 			updated_at INTEGER NOT NULL,
 			PRIMARY KEY(group_name, channel_name)
 		);`,
@@ -174,6 +175,12 @@ func (s *sqliteStore) initSchema(serverID string, ownerID string) error {
 	}
 	for _, stmt := range schema {
 		if _, err := s.db.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	if _, err := s.db.Exec(`ALTER TABLE channels_state ADD COLUMN private_member_cap INTEGER NOT NULL DEFAULT 256`); err != nil {
+		msg := strings.ToLower(strings.TrimSpace(err.Error()))
+		if !strings.Contains(msg, "duplicate column name") {
 			return err
 		}
 	}
@@ -285,7 +292,7 @@ func (s *sqliteStore) rememberChannel(group string, channel string, creator stri
 	return err
 }
 
-func (s *sqliteStore) rememberChannelState(group string, channel string, owner string, public bool) error {
+func (s *sqliteStore) rememberChannelState(group string, channel string, owner string, public bool, privateCap int) error {
 	group = strings.TrimSpace(group)
 	channel = strings.TrimSpace(channel)
 	owner = strings.TrimSpace(owner)
@@ -296,15 +303,20 @@ func (s *sqliteStore) rememberChannelState(group string, channel string, owner s
 	pub := 0
 	if public {
 		pub = 1
+		privateCap = 0
+	}
+	if privateCap < 0 {
+		privateCap = 0
 	}
 	_, err := s.db.Exec(`
-		INSERT INTO channels_state(group_name, channel_name, owner_login_id, is_public, updated_at)
-		VALUES(?, ?, ?, ?, ?)
+		INSERT INTO channels_state(group_name, channel_name, owner_login_id, is_public, private_member_cap, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?)
 		ON CONFLICT(group_name, channel_name) DO UPDATE SET
 			owner_login_id = excluded.owner_login_id,
 			is_public = excluded.is_public,
+			private_member_cap = excluded.private_member_cap,
 			updated_at = excluded.updated_at
-	`, group, channel, owner, pub, now)
+	`, group, channel, owner, pub, privateCap, now)
 	return err
 }
 
@@ -371,10 +383,11 @@ func (s *sqliteStore) removeUserChannelMembership(loginID string, group string, 
 }
 
 type persistedChannelState struct {
-	Group   string
-	Channel string
-	Owner   string
-	Public  bool
+	Group            string
+	Channel          string
+	Owner            string
+	Public           bool
+	PrivateMemberCap int
 }
 
 type persistedUserMembership struct {
@@ -385,7 +398,7 @@ type persistedUserMembership struct {
 
 func (s *sqliteStore) loadAllChannelStates() ([]persistedChannelState, error) {
 	rows, err := s.db.Query(`
-		SELECT group_name, channel_name, owner_login_id, is_public
+		SELECT group_name, channel_name, owner_login_id, is_public, COALESCE(private_member_cap, 0)
 		FROM channels_state
 		ORDER BY group_name ASC, channel_name ASC
 	`)
@@ -398,7 +411,7 @@ func (s *sqliteStore) loadAllChannelStates() ([]persistedChannelState, error) {
 	for rows.Next() {
 		var st persistedChannelState
 		var isPublic int
-		if err := rows.Scan(&st.Group, &st.Channel, &st.Owner, &isPublic); err != nil {
+		if err := rows.Scan(&st.Group, &st.Channel, &st.Owner, &isPublic, &st.PrivateMemberCap); err != nil {
 			return nil, err
 		}
 		st.Group = strings.TrimSpace(st.Group)
@@ -461,7 +474,7 @@ func (s *sqliteStore) loadUserMembershipsWithChannelState(loginID string, limit 
 
 	rows, err := s.db.Query(`
 		SELECT m.group_name, m.channel_name,
-		       COALESCE(cs.owner_login_id, ''), COALESCE(cs.is_public, 1)
+		       COALESCE(cs.owner_login_id, ''), COALESCE(cs.is_public, 1), COALESCE(cs.private_member_cap, 0)
 		FROM user_channel_memberships m
 		LEFT JOIN channels_state cs
 		  ON cs.group_name = m.group_name AND cs.channel_name = m.channel_name
@@ -478,7 +491,7 @@ func (s *sqliteStore) loadUserMembershipsWithChannelState(loginID string, limit 
 	for rows.Next() {
 		var st persistedChannelState
 		var isPublic int
-		if err := rows.Scan(&st.Group, &st.Channel, &st.Owner, &isPublic); err != nil {
+		if err := rows.Scan(&st.Group, &st.Channel, &st.Owner, &isPublic, &st.PrivateMemberCap); err != nil {
 			return nil, err
 		}
 		st.Group = strings.TrimSpace(st.Group)

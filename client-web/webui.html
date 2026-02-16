@@ -315,6 +315,7 @@
           <div class="rail-item">
             <button id="dmModeBtn" class="rail-btn sel-rail" type="button" title="Friends">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a5 5 0 1 0-5-5 5 5 0 0 0 5 5zm0 2c-4.4 0-8 2-8 4.5V21h16v-2.5C20 16 16.4 14 12 14z"/></svg>
+              <span id="dmUnreadBadge" class="unread-badge rail-badge" hidden>0</span>
             </button>
             <div class="rail-label">Friends</div>
           </div>
@@ -552,6 +553,7 @@ const profileImagePreviewIcon = document.getElementById('profileImagePreviewIcon
 const profileImageClear = document.getElementById('profileImageClear');
 const presenceMode = document.getElementById('presenceMode');
 const dmModeBtn = document.getElementById('dmModeBtn');
+const dmUnreadBadge = document.getElementById('dmUnreadBadge');
 const groupCreateRailBtn = document.getElementById('groupCreateRailBtn');
 const contextListLabel = document.getElementById('contextListLabel');
 const contextOwnerLabel = document.getElementById('contextOwnerLabel');
@@ -609,6 +611,7 @@ let profileImageDirty = false;
 let chatEvents = [];
 let unreadDM = {};
 let unreadGroupChannel = {};
+let lastGroupChannels = {};
 let footerCopyBubbleTimer = null;
 let groupIconDraft = '';
 let groupIconDirty = false;
@@ -618,6 +621,56 @@ let chatShowProfileImages = true;
 let chatShowTime = true;
 const avatarMaxTTLMS = 6 * 60 * 60 * 1000;
 let actorAvatars = {};
+
+function loadLastGroupChannels() {
+  try {
+    const raw = localStorage.getItem('openaccord.group.last_channels');
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return;
+    lastGroupChannels = parsed;
+  } catch (_) {}
+}
+
+function saveLastGroupChannels() {
+  try {
+    localStorage.setItem('openaccord.group.last_channels', JSON.stringify(lastGroupChannels || {}));
+  } catch (_) {}
+}
+
+function rememberLastGroupChannel(group, channel) {
+  group = (group || '').trim();
+  channel = (channel || 'default').trim() || 'default';
+  if (!group) return;
+  if (!lastGroupChannels) lastGroupChannels = {};
+  lastGroupChannels[group] = channel;
+  saveLastGroupChannels();
+}
+
+function preferredChannelForGroup(group, channels) {
+  group = (group || '').trim();
+  if (!group) return 'default';
+  const preferred = ((lastGroupChannels && lastGroupChannels[group]) || '').trim();
+  if (preferred && Array.isArray(channels) && channels.includes(preferred)) return preferred;
+  return 'default';
+}
+
+function totalDMUnread() {
+  let total = 0;
+  for (const n of Object.values(unreadDM || {})) total += Number(n || 0);
+  return total;
+}
+
+function updateDMUnreadBadge() {
+  const total = totalDMUnread();
+  if (!dmUnreadBadge) return;
+  if (total > 0) {
+    dmUnreadBadge.hidden = false;
+    dmUnreadBadge.textContent = total > 99 ? '99+' : String(total);
+  } else {
+    dmUnreadBadge.hidden = true;
+  }
+}
 
 function rememberActorAvatar(loginID, profileImage, checksum) {
   loginID = (loginID || '').trim();
@@ -686,8 +739,10 @@ function saveChatPrefs() {
 }
 
 loadChatPrefs();
+loadLastGroupChannels();
 chatShowImages.checked = chatShowProfileImages;
 chatShowTimestamps.checked = chatShowTime;
+updateDMUnreadBadge();
 
 profileImageInput.addEventListener('change', () => {
   const file = profileImageInput.files && profileImageInput.files[0];
@@ -1311,6 +1366,7 @@ function appendChat(ev) {
   const channel = ((ev.channel || 'default').trim() || 'default');
   if (isDM && target && target !== activeTarget && ev.actor_id !== selfLoginID) {
     unreadDM[target] = (unreadDM[target] || 0) + 1;
+    updateDMUnreadBadge();
     renderTargets(latestTargets, latestPendingFriends);
   }
   if (isGroup && group && ev.actor_id !== selfLoginID) {
@@ -1330,6 +1386,7 @@ function clearUnreadDM(target) {
   target = (target || '').trim();
   if (!target) return;
   if (unreadDM[target]) delete unreadDM[target];
+  updateDMUnreadBadge();
 }
 
 function createUnreadBadge(count) {
@@ -1617,6 +1674,7 @@ function renderTargets(targets, pendingFriends) {
   if ((targets || []).length === 0) {
     if (pending.length === 0) friendList.textContent = 'No friends/targets yet';
   }
+  updateDMUnreadBadge();
   updateChatContext();
   if (changed) persistContextSoon();
 }
@@ -1641,7 +1699,8 @@ async function createGroupFromPanel() {
   try {
     const iconDraft = groupCreateIconDraft;
     const profileTextDraft = (groupCreateProfileText.value || '').trim();
-    const created = await post('/api/group/create', {group, channel: 'default', public: true});
+    const inviteOnly = window.confirm('Create default channel as invite-only? OK = invite-only, Cancel = public');
+    const created = await post('/api/group/create', {group, channel: 'default', public: !inviteOnly});
     const createdGroup = ((created && created.group) || group).trim();
     const createdChannel = (((created && created.channel) || 'default').trim() || 'default');
 
@@ -1655,6 +1714,7 @@ async function createGroupFromPanel() {
     navMode = 'group';
     activeGroup = createdGroup;
     activeChannel = createdChannel;
+    rememberLastGroupChannel(activeGroup, activeChannel);
     activeTarget = '';
     let foundGroup = false;
     for (const g of latestGroups) {
@@ -1722,7 +1782,7 @@ async function joinByPublicInviteCode() {
     if (group) {
       navMode = 'group';
       activeGroup = group;
-      activeChannel = 'default';
+      activeChannel = preferredChannelForGroup(group, []);
       activeTarget = '';
     }
     await poll();
@@ -1806,7 +1866,7 @@ function renderGroups(groups) {
     btn.onclick = () => {
       navMode = 'group';
       activeGroup = g.name || '';
-      activeChannel = 'default';
+      activeChannel = preferredChannelForGroup(activeGroup, Array.isArray(g.channels) ? g.channels : []);
       clearUnreadGroupChannel(activeGroup, activeChannel);
       activeTarget = '';
       renderGroups(latestGroups);
@@ -1849,7 +1909,9 @@ function renderChannels() {
     return;
   }
   if (!channels.includes(activeChannel)) {
-    activeChannel = channels[0];
+    activeChannel = preferredChannelForGroup(activeGroup, channels);
+    if (!channels.includes(activeChannel)) activeChannel = channels[0];
+    rememberLastGroupChannel(activeGroup, activeChannel);
     persistContextSoon();
   }
   for (const ch of channels) {
@@ -1858,6 +1920,7 @@ function renderChannels() {
     if (activeChannel === ch) row.classList.add('sel-row-channel');
     row.onclick = () => {
       activeChannel = ch;
+      rememberLastGroupChannel(activeGroup, activeChannel);
       clearUnreadGroupChannel(activeGroup, activeChannel);
       renderChannels();
       renderGroups(latestGroups);
@@ -1881,9 +1944,11 @@ function renderChannels() {
       const name = window.prompt(`New channel name for ${activeGroup}`);
       const channel = (name || '').trim();
       if (!channel) return;
+      const inviteOnly = window.confirm('Create as invite-only channel? OK = invite-only, Cancel = public');
       try {
-        await post('/api/group/create', {group: activeGroup, channel, public: true});
+        await post('/api/group/create', {group: activeGroup, channel, public: !inviteOnly});
         activeChannel = channel;
+        rememberLastGroupChannel(activeGroup, activeChannel);
         await poll();
         persistContextSoon();
       } catch (e) {
@@ -1922,6 +1987,7 @@ async function bootstrap() {
     navMode = 'group';
     activeGroup = (last.group || '').trim();
     activeChannel = (last.channel || 'default').trim() || 'default';
+    rememberLastGroupChannel(activeGroup, activeChannel);
     activeTarget = '';
   } else if (last.mode === 'dm') {
     navMode = 'dm';
@@ -1959,6 +2025,7 @@ function resetUIForSetup() {
   activeChannel = 'default';
   unreadDM = {};
   unreadGroupChannel = {};
+  updateDMUnreadBadge();
   pendingInviteKeys = {};
   groupIconDraft = '';
   groupIconDirty = false;

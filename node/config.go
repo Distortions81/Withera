@@ -36,9 +36,10 @@ type nodeConfig struct {
 	PersistChatMsgs   *bool  `toml:"persist_chat_messages"`
 	MaxPendingMsgs    *int   `toml:"max_pending_msgs"`
 
-	MaxChannelsPerGroup *int `toml:"max_channels_per_group"`
-	MaxGroupNameLen     *int `toml:"max_group_name_len"`
-	MaxChannelNameLen   *int `toml:"max_channel_name_len"`
+	MaxChannelsPerGroup      *int `toml:"max_channels_per_group"`
+	MaxGroupNameLen          *int `toml:"max_group_name_len"`
+	MaxChannelNameLen        *int `toml:"max_channel_name_len"`
+	MaxPrivateChannelMembers *int `toml:"max_private_channel_members"`
 
 	StatsHTTP *bool  `toml:"stats_http"`
 	StatsAddr string `toml:"stats_addr"`
@@ -180,6 +181,9 @@ func applyConfigToFlags(cfg nodeConfig, fs *flag.FlagSet, isSet map[string]bool,
 		return err
 	}
 	if err := setInt("max-channel-name-len", cfg.MaxChannelNameLen); err != nil {
+		return err
+	}
+	if err := setInt("max-private-channel-members", cfg.MaxPrivateChannelMembers); err != nil {
 		return err
 	}
 	if err := setBool("stats-http", cfg.StatsHTTP); err != nil {
