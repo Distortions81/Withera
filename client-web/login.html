@@ -378,8 +378,9 @@ function renderSetupIdentities(ids) {
     row.type = 'button';
     row.className = 'setup-id-row';
     if ((it.path || '') === selectedSetupPath) row.classList.add('active');
-    const label = (it.name || '').trim() || ((it.login_id || '').slice(0, 12) || '(unknown)');
-    row.innerHTML = `${label}<span class="setup-id-meta">${(it.login_id || '').slice(0, 12)} · ${it.path || ''}</span>`;
+    const userID = (it.user_id || '').trim();
+    const label = (it.name || '').trim() || (userID || (it.login_id || '').slice(0, 12) || '(unknown)');
+    row.innerHTML = `${label}<span class="setup-id-meta">${userID || '(no user id)'} · ${it.path || ''}</span>`;
     row.onclick = () => {
       selectedSetupPath = it.path || '';
       renderSetupIdentities(items);
@@ -414,7 +415,7 @@ async function createIdentityFromSetup() {
   const rec = (created.recovery_text || '').trim();
   const qr = (created.recovery_qr || '').trim();
   const shouldConnect = await new Promise((resolve) => {
-    recoveryMeta.textContent = `Identity created: ${created.path || ''}  login_id: ${created.login_id || ''}`;
+    recoveryMeta.textContent = `Identity created: ${created.path || ''}  user_id: ${created.user_id || ''}`;
     recoveryKeyEl.textContent = rec;
     recoveryQREl.src = qr;
     recoveryOverlay.hidden = false;
@@ -436,7 +437,7 @@ async function backupSelectedIdentity() {
   setupErr.textContent = '';
   const pack = await post('/api/setup/backup', {path: selectedSetupPath});
   await new Promise((resolve) => {
-    recoveryMeta.textContent = `Backup for: ${pack.path || ''}  login_id: ${pack.login_id || ''}`;
+    recoveryMeta.textContent = `Backup for: ${pack.path || ''}  user_id: ${pack.user_id || ''}`;
     recoveryKeyEl.textContent = (pack.recovery_text || '').trim();
     recoveryQREl.src = (pack.recovery_qr || '').trim();
     recoveryOverlay.hidden = false;

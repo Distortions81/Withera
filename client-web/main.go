@@ -173,6 +173,7 @@ type netMsg struct {
 type identityCandidate struct {
 	Path    string
 	LoginID string
+	UserID  string
 	Name    string
 }
 
@@ -200,6 +201,7 @@ type webEvent struct {
 
 type dmTarget struct {
 	ID            string `json:"id"`
+	UserID        string `json:"user_id,omitempty"`
 	Label         string `json:"label"`
 	Nickname      string `json:"nickname,omitempty"`
 	ProfileText   string `json:"profile_text,omitempty"`
@@ -212,6 +214,7 @@ type dmTarget struct {
 
 type channelInviteEntry struct {
 	FromID     string `json:"from_id"`
+	FromUserID string `json:"from_user_id,omitempty"`
 	FromLabel  string `json:"from_label"`
 	Group      string `json:"group"`
 	Channel    string `json:"channel"`
@@ -219,12 +222,20 @@ type channelInviteEntry struct {
 	InviteKey  string `json:"invite_key"`
 }
 
+type publicGroupInviteCode struct {
+	V     int    `json:"v"`
+	Scope string `json:"scope"`
+	Addr  string `json:"addr,omitempty"`
+	Group string `json:"group"`
+}
+
 type groupEntry struct {
-	Name       string   `json:"name"`
-	Channels   []string `json:"channels,omitempty"`
-	Owned      bool     `json:"owned,omitempty"`
-	OwnerID    string   `json:"owner_id,omitempty"`
-	OwnerLabel string   `json:"owner_label,omitempty"`
+	Name        string   `json:"name"`
+	Channels    []string `json:"channels,omitempty"`
+	Owned       bool     `json:"owned,omitempty"`
+	OwnerID     string   `json:"owner_id,omitempty"`
+	OwnerUserID string   `json:"owner_user_id,omitempty"`
+	OwnerLabel  string   `json:"owner_label,omitempty"`
 }
 
 type webClient struct {
@@ -290,6 +301,7 @@ const (
 	defaultPresenceTTLSec     = 390
 	friendKeyMaxAge           = 30 * 24 * time.Hour
 	maxPeerKeysPerLogin       = 8
+	publicInviteCodeVersion   = 1
 )
 
 func stamp() string { return time.Now().Format("15:04:05") }
@@ -414,8 +426,8 @@ func (c *webClient) resolveRecipient(token string) (string, bool) {
 	if id, ok := c.contacts[token]; ok {
 		return id, true
 	}
-	if looksLikeLoginID(token) {
-		return token, true
+	if id, ok := parseLoginIDToken(token); ok {
+		return id, true
 	}
 	return "", false
 }
@@ -1068,10 +1080,10 @@ func (c *webClient) networkLoop(ch <-chan netMsg) {
 				c.setPresence(p.From, p.Body, 0)
 			}
 		case "error":
-			c.addEvent("info", "server error: "+p.Body)
+			c.addEvent("info", "node error: "+p.Body)
 		default:
 			raw, _ := json.Marshal(p)
-			c.addEvent("info", "server: "+string(raw))
+			c.addEvent("info", "node: "+string(raw))
 		}
 	}
 }
@@ -1242,6 +1254,7 @@ func (c *webClient) dmTargets() []dmTarget {
 	for _, id := range ids {
 		out = append(out, dmTarget{
 			ID:            id,
+			UserID:        userIDForLoginID(id),
 			Label:         c.displayPeerLocked(id),
 			Nickname:      strings.TrimSpace(c.nicknames[id]),
 			ProfileText:   strings.TrimSpace(c.peerProfiles[id]),
@@ -1272,6 +1285,7 @@ func (c *webClient) pendingFriendRequests() []dmTarget {
 	for _, id := range ids {
 		out = append(out, dmTarget{
 			ID:            id,
+			UserID:        userIDForLoginID(id),
 			Label:         c.displayPeerLocked(id),
 			Nickname:      strings.TrimSpace(c.nicknames[id]),
 			ProfileText:   strings.TrimSpace(c.peerProfiles[id]),
@@ -1294,6 +1308,7 @@ func (c *webClient) pendingChannelInvites() []channelInviteEntry {
 			continue
 		}
 		inv.FromLabel = c.displayPeerLocked(inv.FromID)
+		inv.FromUserID = userIDForLoginID(inv.FromID)
 		inv.Channel = strings.TrimSpace(inv.Channel)
 		inv.InviteKey = channelInviteKey(inv.FromID, inv.Group)
 		out = append(out, inv)
@@ -1330,10 +1345,12 @@ func (c *webClient) groupsList() []groupEntry {
 		_, owned := c.ownedGroups[g]
 		ownerID := strings.TrimSpace(c.groupOwners[g])
 		ownerLabel := ""
+		ownerUserID := ""
 		if looksLikeLoginID(ownerID) {
 			ownerLabel = c.displayPeerLocked(ownerID)
+			ownerUserID = userIDForLoginID(ownerID)
 		}
-		out = append(out, groupEntry{Name: g, Channels: channels, Owned: owned, OwnerID: ownerID, OwnerLabel: ownerLabel})
+		out = append(out, groupEntry{Name: g, Channels: channels, Owned: owned, OwnerID: ownerID, OwnerUserID: ownerUserID, OwnerLabel: ownerLabel})
 	}
 	return out
 }
@@ -1380,6 +1397,7 @@ func (c *webClient) profileCard(loginID string) dmTarget {
 	loginID = strings.TrimSpace(loginID)
 	return dmTarget{
 		ID:            loginID,
+		UserID:        userIDForLoginID(loginID),
 		Label:         c.displayPeerLocked(loginID),
 		Nickname:      strings.TrimSpace(c.nicknames[loginID]),
 		ProfileText:   strings.TrimSpace(c.peerProfiles[loginID]),
@@ -1403,6 +1421,7 @@ func decodeJSON(r *http.Request, dst any) error {
 func (c *webClient) handleBootstrap(w http.ResponseWriter, _ *http.Request) {
 	resp := map[string]any{
 		"login_id":          c.loginID,
+		"user_id":           userIDForLoginID(c.loginID),
 		"display_name":      c.displayName,
 		"profile_text":      c.profileText,
 		"targets":           c.dmTargets(),
@@ -1504,6 +1523,48 @@ func parseChannelInviteKey(v string) (from string, group string, ok bool) {
 		return "", "", false
 	}
 	return from, group, true
+}
+
+func makePublicGroupInviteCode(group string, serverAddr string) (string, error) {
+	group = normalizeGroupName(group)
+	serverAddr = strings.TrimSpace(serverAddr)
+	if group == "" {
+		return "", fmt.Errorf("group required")
+	}
+	payload := publicGroupInviteCode{
+		V:     publicInviteCodeVersion,
+		Scope: "public_group",
+		Addr:  serverAddr,
+		Group: group,
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	return groupedToken(base58Encode(raw), 5), nil
+}
+
+func parsePublicGroupInviteCode(code string) (publicGroupInviteCode, error) {
+	var payload publicGroupInviteCode
+	raw, err := base58Decode(code)
+	if err != nil {
+		return payload, err
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return payload, fmt.Errorf("invalid invite code")
+	}
+	if payload.V != publicInviteCodeVersion {
+		return payload, fmt.Errorf("unsupported invite code version")
+	}
+	if strings.TrimSpace(payload.Scope) != "public_group" {
+		return payload, fmt.Errorf("unsupported invite code scope")
+	}
+	payload.Group = normalizeGroupName(payload.Group)
+	payload.Addr = strings.TrimSpace(payload.Addr)
+	if payload.Group == "" {
+		return payload, fmt.Errorf("invalid invite group")
+	}
+	return payload, nil
 }
 
 func (c *webClient) handleGroupCreate(w http.ResponseWriter, r *http.Request) {
@@ -1646,6 +1707,58 @@ func (c *webClient) handleGroupInvite(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "sent": sent})
 }
 
+func (c *webClient) handleGroupPublicCode(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Group string `json:"group"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+	group := normalizeGroupName(req.Group)
+	if group == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "group required"})
+		return
+	}
+	code, err := makePublicGroupInviteCode(group, c.serverAddr)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":          true,
+		"group":       group,
+		"server_addr": c.serverAddr,
+		"code":        code,
+	})
+}
+
+func (c *webClient) handleGroupJoinCode(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Code string `json:"code"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+	parsed, err := parsePublicGroupInviteCode(req.Code)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if parsed.Addr != "" && strings.TrimSpace(parsed.Addr) != strings.TrimSpace(c.serverAddr) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invite targets node %s; current node is %s", parsed.Addr, c.serverAddr)})
+		return
+	}
+	if err := c.sendSigned(Packet{Type: "channel_join", Group: parsed.Group, Channel: ""}); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	c.rememberGroup(parsed.Group, "default")
+	c.addEvent("info", fmt.Sprintf("public invite redeemed: %s (joining public channels)", parsed.Group))
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "group": parsed.Group})
+}
+
 func (c *webClient) handleInviteAccept(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		InviteKey string `json:"invite_key"`
@@ -1695,7 +1808,7 @@ func (c *webClient) handleInviteIgnore(w http.ResponseWriter, r *http.Request) {
 	c.mu.Lock()
 	delete(c.pendingInvites, channelInviteKey(from, group))
 	c.mu.Unlock()
-	// Ignore is local-only: dismiss the notice without server action.
+	// Ignore is local-only: dismiss the notice without node action.
 	c.addEvent("info", fmt.Sprintf("group invite ignored: %s", group))
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
@@ -1996,8 +2109,8 @@ func (c *webClient) handleGroups(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (c *webClient) handleProfileCard(w http.ResponseWriter, r *http.Request) {
-	loginID := strings.TrimSpace(r.URL.Query().Get("id"))
-	if !looksLikeLoginID(loginID) {
+	loginID, ok := parseLoginIDToken(r.URL.Query().Get("id"))
+	if !ok {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
 		return
 	}
@@ -2340,6 +2453,37 @@ func shortID(s string) string {
 func loginIDForPubKey(pub ed25519.PublicKey) string {
 	sum := sha256.Sum256(pub)
 	return hex.EncodeToString(sum[:])
+}
+
+func userIDForLoginID(loginID string) string {
+	loginID = strings.TrimSpace(strings.ToLower(loginID))
+	if !looksLikeLoginID(loginID) {
+		return ""
+	}
+	raw, err := hex.DecodeString(loginID)
+	if err != nil || len(raw) != sha256.Size {
+		return ""
+	}
+	return groupedToken(base58Encode(raw), 5)
+}
+
+func loginIDForUserID(userID string) (string, bool) {
+	raw, err := base58Decode(userID)
+	if err != nil || len(raw) != sha256.Size {
+		return "", false
+	}
+	return hex.EncodeToString(raw), true
+}
+
+func parseLoginIDToken(token string) (string, bool) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return "", false
+	}
+	if looksLikeLoginID(token) {
+		return strings.ToLower(token), true
+	}
+	return loginIDForUserID(token)
 }
 
 func loadKey(path string) (ed25519.PrivateKey, error) {
@@ -2845,8 +2989,9 @@ func listIdentityCandidates(home string, currentPath string) []identityCandidate
 			continue
 		}
 		pub := priv.Public().(ed25519.PublicKey)
+		loginID := loginIDForPubKey(pub)
 		name, _, _, _, _, _ := loadProfile(profilePathForKey(home, p))
-		out = append(out, identityCandidate{Path: p, LoginID: loginIDForPubKey(pub), Name: strings.TrimSpace(name)})
+		out = append(out, identityCandidate{Path: p, LoginID: loginID, UserID: userIDForLoginID(loginID), Name: strings.TrimSpace(name)})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Path == currentPath {
@@ -2863,7 +3008,7 @@ func listIdentityCandidates(home string, currentPath string) []identityCandidate
 func promptIdentityPath(home string, currentPath string, conflictMode bool) (string, error) {
 	candidates := listIdentityCandidates(home, currentPath)
 	if conflictMode {
-		fmt.Println("login_id already connected on the server.")
+		fmt.Println("login_id already connected on the node.")
 		fmt.Println("Choose a different identity:")
 	} else {
 		fmt.Println("Choose an identity to use:")
@@ -3061,7 +3206,7 @@ func newWebClientForIdentity(serverAddr string, home string, keyPath string, con
 		}
 	}
 
-	client.addEvent("info", "connected to "+serverAddr)
+	client.addEvent("info", "connected to node "+serverAddr)
 	client.addEvent("info", "login_id: "+loginID)
 	client.addEvent("info", "display name: "+displayName)
 	if err := client.publishOwnProfile(); err != nil {
@@ -3093,8 +3238,8 @@ func newWebClientForIdentity(serverAddr string, home string, keyPath string, con
 }
 
 func main() {
-	serverAddr := flag.String("addr", "127.0.0.1:9101", "server address")
-	webAddr := flag.String("web", "127.0.0.1:0", "local web server listen address (default ephemeral port)")
+	serverAddr := flag.String("addr", "127.0.0.1:9101", "node address")
+	webAddr := flag.String("web", "127.0.0.1:0", "local web UI listen address (default ephemeral port)")
 	keyPath := flag.String("key", "", "private key file path")
 	contactsPath := flag.String("contacts", "", "contacts file path")
 	profilePath := flag.String("profile", "", "profile file path")
@@ -3185,6 +3330,7 @@ func main() {
 			ids = append(ids, map[string]any{
 				"path":     cand.Path,
 				"login_id": cand.LoginID,
+				"user_id":  cand.UserID,
 				"name":     cand.Name,
 				"current":  cand.Path == currentPath,
 			})
@@ -3196,6 +3342,7 @@ func main() {
 		}
 		if c != nil {
 			resp["login_id"] = c.loginID
+			resp["user_id"] = userIDForLoginID(c.loginID)
 			resp["display_name"] = c.displayName
 		}
 		writeJSON(w, http.StatusOK, resp)
@@ -3223,6 +3370,7 @@ func main() {
 			"ok":            true,
 			"path":          path,
 			"login_id":      loginIDForPubKey(pub),
+			"user_id":       userIDForLoginID(loginIDForPubKey(pub)),
 			"recovery_text": groupedToken(recoveryRaw, 5),
 			"recovery_qr":   qrDataURL,
 		})
@@ -3256,6 +3404,7 @@ func main() {
 			"ok":            true,
 			"path":          path,
 			"login_id":      loginIDForPubKey(pub),
+			"user_id":       userIDForLoginID(loginIDForPubKey(pub)),
 			"recovery_text": groupedToken(recoveryRaw, 5),
 			"recovery_qr":   qrDataURL,
 		})
@@ -3289,7 +3438,8 @@ func main() {
 			return
 		}
 		pub := priv.Public().(ed25519.PublicKey)
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path": path, "login_id": loginIDForPubKey(pub)})
+		loginID := loginIDForPubKey(pub)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path": path, "login_id": loginID, "user_id": userIDForLoginID(loginID)})
 	})
 	mux.HandleFunc("/api/setup/connect", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -3325,7 +3475,7 @@ func main() {
 		client = connectedClient
 		activeKeyPath = chosen
 		appMu.Unlock()
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path": chosen, "login_id": connectedClient.loginID})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path": chosen, "login_id": connectedClient.loginID, "user_id": userIDForLoginID(connectedClient.loginID)})
 	})
 	mux.HandleFunc("/api/setup/disconnect", func(w http.ResponseWriter, _ *http.Request) {
 		appMu.Lock()
@@ -3348,6 +3498,8 @@ func main() {
 	mux.HandleFunc("/api/group/send", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleGroupSend(w, r) }))
 	mux.HandleFunc("/api/group/remove", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleGroupRemove(w, r) }))
 	mux.HandleFunc("/api/group/invite", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleGroupInvite(w, r) }))
+	mux.HandleFunc("/api/group/public_code", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleGroupPublicCode(w, r) }))
+	mux.HandleFunc("/api/group/join_code", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleGroupJoinCode(w, r) }))
 	mux.HandleFunc("/api/context/set", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleContextSet(w, r) }))
 	mux.HandleFunc("/api/ping", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handlePing(w, r) }))
 	mux.HandleFunc("/api/friend/add", withClient(func(c *webClient, w http.ResponseWriter, r *http.Request) { c.handleFriendAdd(w, r) }))
@@ -3374,6 +3526,6 @@ func main() {
 		openBrowser(url)
 	}
 	if err := http.Serve(ln, mux); err != nil {
-		log.Fatalf("web server failed: %v", err)
+		log.Fatalf("web UI listener failed: %v", err)
 	}
 }

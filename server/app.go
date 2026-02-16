@@ -50,6 +50,9 @@ const (
 	minPresenceTTLSec           = 180
 	maxPresenceTTLSec           = 900
 	routeEntryTTL               = 10 * time.Minute
+	defaultMaxChannelsPerGroup  = 64
+	defaultMaxGroupNameRunes    = 64
+	defaultMaxChannelNameRunes  = 48
 )
 
 type Packet struct {
@@ -194,26 +197,30 @@ func (rl *rateLimiter) Allow() bool {
 }
 
 type Server struct {
-	id                   string
-	ownerPubKeyB64       string
-	ownerPriv            ed25519.PrivateKey
-	advertiseAddr        string
-	maxPeerSessions      int
-	maxMessageBytes      int
-	maxUncompressedBytes int
-	maxExpandRatio       int
-	maxMsgsPerSec        int
-	burstMessages        int
-	maxSeenEntries       int
-	maxKnownAddrs        int
-	knownAddrTTL         time.Duration
-	relayEnabled         bool
-	clientMode           string
-	clientAllow          map[string]struct{}
-	persistenceMode      string
-	persistAutoHost      bool
-	maxPendingMsgs       int
-	store                *sqliteStore
+	id                    string
+	ownerPubKeyB64        string
+	ownerPriv             ed25519.PrivateKey
+	advertiseAddr         string
+	maxPeerSessions       int
+	maxMessageBytes       int
+	maxUncompressedBytes  int
+	maxExpandRatio        int
+	maxMsgsPerSec         int
+	burstMessages         int
+	maxSeenEntries        int
+	maxKnownAddrs         int
+	knownAddrTTL          time.Duration
+	relayEnabled          bool
+	clientMode            string
+	clientAllow           map[string]struct{}
+	persistenceMode       string
+	persistAutoHost       bool
+	persistPublicTopology bool
+	maxPendingMsgs        int
+	maxChannelsPerGroup   int
+	maxGroupNameRunes     int
+	maxChannelNameRunes   int
+	store                 *sqliteStore
 
 	mu           sync.RWMutex
 	users        map[string]map[*Conn]struct{}
@@ -257,41 +264,45 @@ func NewServer(id, ownerPubKeyB64 string, ownerPriv ed25519.PrivateKey, advertis
 	}
 
 	return &Server{
-		id:                   id,
-		ownerPubKeyB64:       ownerPubKeyB64,
-		ownerPriv:            ownerPriv,
-		advertiseAddr:        normalizeAddr(advertiseAddr),
-		maxPeerSessions:      maxPeerSessions,
-		maxMessageBytes:      maxMessageBytes,
-		maxUncompressedBytes: defaultMaxUncompressedBytes,
-		maxExpandRatio:       defaultMaxExpandRatio,
-		maxMsgsPerSec:        maxMsgsPerSec,
-		burstMessages:        burstMessages,
-		maxSeenEntries:       maxSeenEntries,
-		maxKnownAddrs:        maxKnownAddrs,
-		knownAddrTTL:         knownAddrTTL,
-		relayEnabled:         true,
-		clientMode:           clientModePublic,
-		clientAllow:          make(map[string]struct{}),
-		persistenceMode:      persistenceModeLive,
-		persistAutoHost:      true,
-		maxPendingMsgs:       500,
-		users:                make(map[string]map[*Conn]struct{}),
-		peers:                make(map[string]*Peer),
-		seen:                 make(map[string]time.Time),
-		knownAddrs:           make(map[string]time.Time),
-		dialing:              make(map[string]struct{}),
-		peerScore:            make(map[string]int),
-		peerBanned:           make(map[string]time.Time),
-		peerBanScore:         defaultPeerBanScore,
-		peerBanFor:           defaultPeerBanFor,
-		friends:              make(map[string]map[string]struct{}),
-		friendAdds:           make(map[string]map[string]struct{}),
-		channels:             make(map[string]*ChannelState),
-		profiles:             make(map[string]profilePayload),
-		presence:             make(map[string]presenceState),
-		routes:               make(map[string]userRoute),
-		startedAt:            time.Now(),
+		id:                    id,
+		ownerPubKeyB64:        ownerPubKeyB64,
+		ownerPriv:             ownerPriv,
+		advertiseAddr:         normalizeAddr(advertiseAddr),
+		maxPeerSessions:       maxPeerSessions,
+		maxMessageBytes:       maxMessageBytes,
+		maxUncompressedBytes:  defaultMaxUncompressedBytes,
+		maxExpandRatio:        defaultMaxExpandRatio,
+		maxMsgsPerSec:         maxMsgsPerSec,
+		burstMessages:         burstMessages,
+		maxSeenEntries:        maxSeenEntries,
+		maxKnownAddrs:         maxKnownAddrs,
+		knownAddrTTL:          knownAddrTTL,
+		relayEnabled:          true,
+		clientMode:            clientModePublic,
+		clientAllow:           make(map[string]struct{}),
+		persistenceMode:       persistenceModeLive,
+		persistAutoHost:       true,
+		persistPublicTopology: false,
+		maxPendingMsgs:        500,
+		maxChannelsPerGroup:   defaultMaxChannelsPerGroup,
+		maxGroupNameRunes:     defaultMaxGroupNameRunes,
+		maxChannelNameRunes:   defaultMaxChannelNameRunes,
+		users:                 make(map[string]map[*Conn]struct{}),
+		peers:                 make(map[string]*Peer),
+		seen:                  make(map[string]time.Time),
+		knownAddrs:            make(map[string]time.Time),
+		dialing:               make(map[string]struct{}),
+		peerScore:             make(map[string]int),
+		peerBanned:            make(map[string]time.Time),
+		peerBanScore:          defaultPeerBanScore,
+		peerBanFor:            defaultPeerBanFor,
+		friends:               make(map[string]map[string]struct{}),
+		friendAdds:            make(map[string]map[string]struct{}),
+		channels:              make(map[string]*ChannelState),
+		profiles:              make(map[string]profilePayload),
+		presence:              make(map[string]presenceState),
+		routes:                make(map[string]userRoute),
+		startedAt:             time.Now(),
 	}
 }
 
@@ -1173,7 +1184,9 @@ func validateSignedActionPacket(p Packet) bool {
 		return strings.TrimSpace(p.To) != "" && strings.TrimSpace(p.Group) != ""
 	case "group_invite_reject":
 		return strings.TrimSpace(p.To) != "" && strings.TrimSpace(p.Group) != ""
-	case "channel_join", "channel_leave":
+	case "channel_join":
+		return strings.TrimSpace(p.Group) != ""
+	case "channel_leave":
 		return strings.TrimSpace(p.Group) != "" && strings.TrimSpace(p.Channel) != ""
 	case "channel_send":
 		return strings.TrimSpace(p.Group) != "" && strings.TrimSpace(p.Channel) != "" && strings.TrimSpace(p.Body) != ""
@@ -1256,6 +1269,64 @@ func (s *Server) snapshotPresence(loginID string) presenceData {
 
 func channelKey(group string, channel string) string {
 	return strings.TrimSpace(group) + "/" + strings.TrimSpace(channel)
+}
+
+func isNameRuneAllowed(r rune) bool {
+	if r >= 'a' && r <= 'z' {
+		return true
+	}
+	if r >= 'A' && r <= 'Z' {
+		return true
+	}
+	if r >= '0' && r <= '9' {
+		return true
+	}
+	return r == '-' || r == '_' || r == '.'
+}
+
+func validateBoundedName(kind string, value string, maxRunes int) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("%s is required", kind)
+	}
+	if !utf8.ValidString(value) {
+		return "", fmt.Errorf("%s must be valid utf-8", kind)
+	}
+	if maxRunes <= 0 {
+		maxRunes = 1
+	}
+	if utf8.RuneCountInString(value) > maxRunes {
+		return "", fmt.Errorf("%s too long (max %d chars)", kind, maxRunes)
+	}
+	if strings.Contains(value, "/") {
+		return "", fmt.Errorf("%s cannot contain '/'", kind)
+	}
+	for _, r := range value {
+		if !isNameRuneAllowed(r) {
+			return "", fmt.Errorf("%s contains invalid character %q", kind, r)
+		}
+	}
+	return value, nil
+}
+
+func (s *Server) normalizeGroupAndChannel(group string, channel string, channelOptional bool) (string, string, error) {
+	groupName, err := validateBoundedName("group", group, s.maxGroupNameRunes)
+	if err != nil {
+		return "", "", err
+	}
+	channel = strings.TrimSpace(channel)
+	if channelOptional && channel == "" {
+		return groupName, "", nil
+	}
+	channelName, err := validateBoundedName("channel", channel, s.maxChannelNameRunes)
+	if err != nil {
+		return "", "", err
+	}
+	return groupName, channelName, nil
+}
+
+func (s *Server) sendProtocolError(to string, body string) {
+	_ = s.sendToUser(strings.TrimSpace(to), Packet{Type: "error", From: s.id, To: strings.TrimSpace(to), Body: strings.TrimSpace(body), Origin: s.id})
 }
 
 func splitChannelKey(key string) (group string, channel string) {
@@ -1355,15 +1426,30 @@ func (s *Server) handleFriendAccept(p Packet) {
 }
 
 func (s *Server) handleChannelCreate(p Packet) {
-	key := channelKey(p.Group, p.Channel)
-	if key == "/" {
+	group, channel, err := s.normalizeGroupAndChannel(p.Group, p.Channel, false)
+	if err != nil {
+		s.sendProtocolError(p.From, "channel_create failed: "+err.Error())
 		return
 	}
+	key := channelKey(group, channel)
 	s.mu.Lock()
 	ch := s.channels[key]
 	if ch == nil {
 		ch = &ChannelState{Owner: p.From, Public: p.Public, Members: make(map[string]struct{}), Invites: make(map[string]string)}
-		group := strings.TrimSpace(p.Group)
+		if s.maxChannelsPerGroup > 0 {
+			groupCount := 0
+			for existingKey := range s.channels {
+				existingGroup, _ := splitChannelKey(existingKey)
+				if existingGroup == group {
+					groupCount++
+				}
+			}
+			if groupCount >= s.maxChannelsPerGroup {
+				s.mu.Unlock()
+				s.sendProtocolError(p.From, fmt.Sprintf("channel_create failed: max channels per group reached (%d)", s.maxChannelsPerGroup))
+				return
+			}
+		}
 		for existingKey, existing := range s.channels {
 			existingGroup, _ := splitChannelKey(existingKey)
 			if existingGroup != group {
@@ -1381,15 +1467,16 @@ func (s *Server) handleChannelCreate(p Packet) {
 	}
 	publicChannel := ch.Public
 	s.mu.Unlock()
-	s.notifyUserOrQueue(Packet{Type: "channel_update", From: p.From, To: p.From, Group: p.Group, Channel: p.Channel, Public: publicChannel, Body: "created"})
+	s.notifyUserOrQueue(Packet{Type: "channel_update", From: p.From, To: p.From, Group: group, Channel: channel, Public: publicChannel, Body: "created"})
 }
 
 func (s *Server) handleChannelInvite(p Packet) {
 	if p.From == p.To {
 		return
 	}
-	group := strings.TrimSpace(p.Group)
-	if group == "" {
+	group, _, err := s.normalizeGroupAndChannel(p.Group, "", true)
+	if err != nil {
+		s.sendProtocolError(p.From, "group_invite failed: "+err.Error())
 		return
 	}
 	s.mu.Lock()
@@ -1435,15 +1522,16 @@ func (s *Server) handleChannelInvite(p Packet) {
 	}
 	sort.Strings(channelNames)
 	payload, _ := json.Marshal(map[string]any{"scope": "group", "channels": channelNames})
-	s.notifyUserOrQueue(Packet{Type: "group_invite", From: p.From, To: p.To, Group: p.Group, Channel: "", Public: groupIsPublic, Body: string(payload)})
+	s.notifyUserOrQueue(Packet{Type: "group_invite", From: p.From, To: p.To, Group: group, Channel: "", Public: groupIsPublic, Body: string(payload)})
 }
 
 func (s *Server) handleChannelInviteReject(p Packet) {
 	if p.From == p.To {
 		return
 	}
-	group := strings.TrimSpace(p.Group)
-	if group == "" {
+	group, _, err := s.normalizeGroupAndChannel(p.Group, "", true)
+	if err != nil {
+		s.sendProtocolError(p.From, "group_invite_reject failed: "+err.Error())
 		return
 	}
 	s.mu.Lock()
@@ -1457,24 +1545,20 @@ func (s *Server) handleChannelInviteReject(p Packet) {
 		}
 	}
 	s.mu.Unlock()
-	s.notifyUserOrQueue(Packet{Type: "group_invite_rejected", From: p.From, To: p.To, Group: p.Group, Channel: "", Body: "rejected"})
+	s.notifyUserOrQueue(Packet{Type: "group_invite_rejected", From: p.From, To: p.To, Group: group, Channel: "", Body: "rejected"})
 }
 
 func (s *Server) handleChannelJoin(p Packet) {
-	key := channelKey(p.Group, p.Channel)
-	s.mu.Lock()
-	ch := s.channels[key]
-	if ch == nil {
-		s.mu.Unlock()
-		_ = s.sendToUser(p.From, Packet{Type: "error", From: s.id, To: p.From, Body: "channel_join failed: unknown channel", Origin: s.id})
+	group, channel, err := s.normalizeGroupAndChannel(p.Group, p.Channel, true)
+	if err != nil {
+		s.sendProtocolError(p.From, "channel_join failed: "+err.Error())
 		return
 	}
-	_, member := ch.Members[p.From]
-	_, invited := ch.Invites[p.From]
-	group := strings.TrimSpace(p.Group)
-	groupInvited := false
+
+	s.mu.Lock()
 	groupChannels := make([]*ChannelState, 0)
 	groupChannelNames := make([]string, 0)
+	groupInvited := false
 	for existingKey, existing := range s.channels {
 		g, chName := splitChannelKey(existingKey)
 		if g != group {
@@ -1486,33 +1570,104 @@ func (s *Server) handleChannelJoin(p Packet) {
 			groupInvited = true
 		}
 	}
+	if len(groupChannels) == 0 {
+		s.mu.Unlock()
+		_ = s.sendToUser(p.From, Packet{Type: "error", From: s.id, To: p.From, Body: "channel_join failed: unknown group", Origin: s.id})
+		return
+	}
+
+	joined := make([]Packet, 0, len(groupChannels))
+	if channel == "" {
+		for i, gc := range groupChannels {
+			chName := strings.TrimSpace(groupChannelNames[i])
+			_, member := gc.Members[p.From]
+			if member || gc.Public {
+				gc.Members[p.From] = struct{}{}
+				delete(gc.Invites, p.From)
+				joined = append(joined, Packet{
+					Type:    "channel_joined",
+					From:    p.From,
+					To:      p.From,
+					Group:   group,
+					Channel: chName,
+					Public:  gc.Public,
+					Body:    "joined",
+				})
+			}
+		}
+		if len(joined) == 0 {
+			s.mu.Unlock()
+			_ = s.sendToUser(p.From, Packet{Type: "error", From: s.id, To: p.From, Body: "channel_join failed: no public channels", Origin: s.id})
+			return
+		}
+		s.mu.Unlock()
+		sort.Slice(joined, func(i, j int) bool {
+			return joined[i].Channel < joined[j].Channel
+		})
+		for _, evt := range joined {
+			s.notifyUserOrQueue(evt)
+		}
+		return
+	}
+
+	key := channelKey(group, channel)
+	ch := s.channels[key]
+	if ch == nil {
+		s.mu.Unlock()
+		s.sendProtocolError(p.From, "channel_join failed: unknown channel")
+		return
+	}
+	_, member := ch.Members[p.From]
+	_, invited := ch.Invites[p.From]
 	if member || ch.Public || invited || groupInvited {
-		joinedChannels := make([]string, 0, len(groupChannelNames))
+		joinedChannels := make([]Packet, 0, len(groupChannelNames))
 		if invited || groupInvited {
 			for i, gc := range groupChannels {
 				gc.Members[p.From] = struct{}{}
 				delete(gc.Invites, p.From)
-				joinedChannels = append(joinedChannels, groupChannelNames[i])
+				joinedChannels = append(joinedChannels, Packet{
+					Type:    "channel_joined",
+					From:    p.From,
+					To:      p.From,
+					Group:   group,
+					Channel: strings.TrimSpace(groupChannelNames[i]),
+					Public:  gc.Public,
+					Body:    "joined",
+				})
 			}
 		} else {
 			ch.Members[p.From] = struct{}{}
 			delete(ch.Invites, p.From)
-			joinedChannels = append(joinedChannels, strings.TrimSpace(p.Channel))
+			joinedChannels = append(joinedChannels, Packet{
+				Type:    "channel_joined",
+				From:    p.From,
+				To:      p.From,
+				Group:   group,
+				Channel: channel,
+				Public:  ch.Public,
+				Body:    "joined",
+			})
 		}
-		publicChannel := ch.Public
 		s.mu.Unlock()
-		sort.Strings(joinedChannels)
-		for _, joined := range joinedChannels {
-			s.notifyUserOrQueue(Packet{Type: "channel_joined", From: p.From, To: p.From, Group: p.Group, Channel: joined, Public: publicChannel, Body: "joined"})
+		sort.Slice(joinedChannels, func(i, j int) bool {
+			return joinedChannels[i].Channel < joinedChannels[j].Channel
+		})
+		for _, evt := range joinedChannels {
+			s.notifyUserOrQueue(evt)
 		}
 		return
 	}
 	s.mu.Unlock()
-	_ = s.sendToUser(p.From, Packet{Type: "error", From: s.id, To: p.From, Body: "channel_join failed: invite required", Origin: s.id})
+	s.sendProtocolError(p.From, "channel_join failed: invite required")
 }
 
 func (s *Server) handleChannelLeave(p Packet) {
-	key := channelKey(p.Group, p.Channel)
+	group, channel, err := s.normalizeGroupAndChannel(p.Group, p.Channel, false)
+	if err != nil {
+		s.sendProtocolError(p.From, "channel_leave failed: "+err.Error())
+		return
+	}
+	key := channelKey(group, channel)
 	s.mu.Lock()
 	ch := s.channels[key]
 	if ch != nil {
@@ -1522,17 +1677,22 @@ func (s *Server) handleChannelLeave(p Packet) {
 }
 
 func (s *Server) handleChannelSend(p Packet) {
-	key := channelKey(p.Group, p.Channel)
+	group, channel, err := s.normalizeGroupAndChannel(p.Group, p.Channel, false)
+	if err != nil {
+		s.sendProtocolError(p.From, "channel_send failed: "+err.Error())
+		return
+	}
+	key := channelKey(group, channel)
 	s.mu.RLock()
 	ch := s.channels[key]
 	if ch == nil {
 		s.mu.RUnlock()
-		_ = s.sendToUser(p.From, Packet{Type: "error", From: s.id, To: p.From, Body: "channel_send failed: unknown channel", Origin: s.id})
+		s.sendProtocolError(p.From, "channel_send failed: unknown channel")
 		return
 	}
 	if _, ok := ch.Members[p.From]; !ok {
 		s.mu.RUnlock()
-		_ = s.sendToUser(p.From, Packet{Type: "error", From: s.id, To: p.From, Body: "channel_send failed: not a member", Origin: s.id})
+		s.sendProtocolError(p.From, "channel_send failed: not a member")
 		return
 	}
 	members := make([]string, 0, len(ch.Members))
@@ -1542,7 +1702,7 @@ func (s *Server) handleChannelSend(p Packet) {
 	s.mu.RUnlock()
 
 	for _, member := range members {
-		s.notifyUserOrQueue(Packet{Type: "channel_deliver", ID: p.ID, From: p.From, To: member, Body: p.Body, Group: p.Group, Channel: p.Channel, Origin: s.id, PubKey: p.PubKey, Sig: p.Sig, CreatedAt: p.CreatedAt, Hops: p.Hops})
+		s.notifyUserOrQueue(Packet{Type: "channel_deliver", ID: p.ID, From: p.From, To: member, Body: p.Body, Group: group, Channel: channel, Origin: s.id, PubKey: p.PubKey, Sig: p.Sig, CreatedAt: p.CreatedAt, Hops: p.Hops})
 	}
 }
 
@@ -1675,7 +1835,7 @@ func (s *Server) maybeRememberTopology(p Packet) {
 	if s.persistenceMode != persistenceModePersist || s.store == nil {
 		return
 	}
-	if !s.isPersistenceWhitelisted(p.From) {
+	if !s.persistPublicTopology && !s.isPersistenceWhitelisted(p.From) {
 		return
 	}
 	if strings.TrimSpace(p.Group) != "" {

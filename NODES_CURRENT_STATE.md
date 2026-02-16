@@ -1,6 +1,6 @@
 # Open Accord Nodes (Current State)
 
-This document describes how server nodes currently behave in this repository.
+This document describes how nodes currently behave in this repository.
 
 ## What a node is
 
@@ -59,7 +59,11 @@ Current behavior:
 - Offline queued delivery is only stored/replayed for whitelisted identities.
 - Group/channel topology metadata is only persisted when the acting identity is whitelisted.
 
-Operationally, this means users who want server-backed durability for groups/messages need:
+Optional override:
+- `-persist-public-topology=true` allows persisting group/channel metadata (`groups_meta` / `channels_meta`) for all authenticated users, even when they are not in `-client-allow`.
+- This override does not change hosted-user or offline-message queue policy.
+
+Operationally, this means users who want node-backed durability for groups/messages need:
 - A node that whitelists their `login_id`, or
 - Their own node configured to whitelist themselves.
 
@@ -83,17 +87,28 @@ Nodes currently support signed actions and relay for:
 ## Important flags
 
 Common flags on `go run ./server`:
+- `-config` (TOML config file path)
 - `-listen`, `-advertise`, `-peers`
 - `-sid`, `-key`, `-owner`
 - `-client-mode`, `-client-allow`
 - `-persistence-mode`, `-persistence-db`, `-persist-auto-host`, `-max-pending-msgs`
+- `-persist-public-topology`
 - `-relay`
 - Limits: `-max-msg-bytes`, `-max-uncompressed-bytes`, `-max-expand-ratio`, `-max-msgs-per-sec`, `-burst`
+- Topology limits: `-max-channels-per-group`, `-max-group-name-len`, `-max-channel-name-len`
 - `-stats-http`, `-stats-addr`
+
+TOML config notes:
+- `-config` can define the same fields (snake_case), for example:
+  - `listen`, `advertise`, `sid`, `key`
+  - `peers = ["host:port", ...]`
+  - `client_mode`, `client_allow`
+  - `persistence_mode`, `persistence_db`, `persist_auto_host`, `persist_public_topology`
+  - limit fields like `max_msg_bytes`, `max_channels_per_group`
+- CLI flags still work and override TOML values when explicitly provided.
 
 ## Runtime introspection
 
 When enabled, the node serves local stats HTTP with:
 - Summary/runtime metrics
 - Peer list, negotiated caps, and ping checks
-

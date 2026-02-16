@@ -29,31 +29,39 @@ type testClient struct {
 }
 
 type testServerConfig struct {
-	maxMessageBytes int
-	maxMsgsPerSec   int
-	burstMessages   int
-	maxSeenEntries  int
-	maxKnownAddrs   int
-	knownAddrTTL    time.Duration
-	clientAllow     []string
-	persistenceMode string
-	persistenceDB   string
-	persistAutoHost bool
-	maxPendingMsgs  int
-	preHostedUsers  []string
+	maxMessageBytes       int
+	maxMsgsPerSec         int
+	burstMessages         int
+	maxSeenEntries        int
+	maxKnownAddrs         int
+	knownAddrTTL          time.Duration
+	clientAllow           []string
+	persistenceMode       string
+	persistenceDB         string
+	persistAutoHost       bool
+	persistPublicTopology bool
+	maxChannelsPerGroup   int
+	maxGroupNameLen       int
+	maxChannelNameLen     int
+	maxPendingMsgs        int
+	preHostedUsers        []string
 }
 
 func defaultTestServerConfig() testServerConfig {
 	return testServerConfig{
-		maxMessageBytes: defaultMaxMessageBytes,
-		maxMsgsPerSec:   defaultMaxMsgsPerSec,
-		burstMessages:   defaultBurstMessages,
-		maxSeenEntries:  defaultMaxSeenEntries,
-		maxKnownAddrs:   defaultMaxKnownAddrs,
-		knownAddrTTL:    defaultKnownAddrTTL,
-		persistenceMode: persistenceModeLive,
-		persistAutoHost: true,
-		maxPendingMsgs:  500,
+		maxMessageBytes:       defaultMaxMessageBytes,
+		maxMsgsPerSec:         defaultMaxMsgsPerSec,
+		burstMessages:         defaultBurstMessages,
+		maxSeenEntries:        defaultMaxSeenEntries,
+		maxKnownAddrs:         defaultMaxKnownAddrs,
+		knownAddrTTL:          defaultKnownAddrTTL,
+		persistenceMode:       persistenceModeLive,
+		persistAutoHost:       true,
+		persistPublicTopology: false,
+		maxChannelsPerGroup:   defaultMaxChannelsPerGroup,
+		maxGroupNameLen:       defaultMaxGroupNameRunes,
+		maxChannelNameLen:     defaultMaxChannelNameRunes,
+		maxPendingMsgs:        500,
 	}
 }
 
@@ -94,6 +102,16 @@ func startTestServer(t *testing.T, localSID, advertise string, seedAddrs []strin
 	)
 	s.persistenceMode = cfg.persistenceMode
 	s.persistAutoHost = cfg.persistAutoHost
+	s.persistPublicTopology = cfg.persistPublicTopology
+	if cfg.maxChannelsPerGroup > 0 {
+		s.maxChannelsPerGroup = cfg.maxChannelsPerGroup
+	}
+	if cfg.maxGroupNameLen > 0 {
+		s.maxGroupNameRunes = cfg.maxGroupNameLen
+	}
+	if cfg.maxChannelNameLen > 0 {
+		s.maxChannelNameRunes = cfg.maxChannelNameLen
+	}
 	s.maxPendingMsgs = cfg.maxPendingMsgs
 	for _, id := range cfg.clientAllow {
 		id = strings.TrimSpace(id)
@@ -697,6 +715,49 @@ func TestPersistModeStoresTopologyOnlyForWhitelistedIdentities(t *testing.T) {
 	}
 }
 
+func TestPersistModePublicTopologyStoresForAnyIdentity(t *testing.T) {
+	cfg := defaultTestServerConfig()
+	cfg.persistenceMode = persistenceModePersist
+	cfg.persistAutoHost = true
+	cfg.persistPublicTopology = true
+	tempDir := t.TempDir()
+	cfg.persistenceDB = tempDir + "/state.sqlite"
+
+	allowedPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("allowed key generation failed: %v", err)
+	}
+	blockedPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("blocked key generation failed: %v", err)
+	}
+	allowedID := loginIDForPubKey(allowedPub)
+	blockedID := loginIDForPubKey(blockedPub)
+	cfg.clientAllow = []string{allowedID}
+
+	_, s, stop := startTestServer(t, "s1", "", nil, cfg)
+	defer stop()
+
+	s.processSignedAction(Packet{Type: "channel_create", From: blockedID, Group: "blocked-group", Channel: "main"})
+	s.processSignedAction(Packet{Type: "channel_create", From: allowedID, Group: "allowed-group", Channel: "main"})
+
+	var blockedCount int
+	if err := s.store.db.QueryRow(`SELECT COUNT(1) FROM groups_meta WHERE group_name = ?`, "blocked-group").Scan(&blockedCount); err != nil {
+		t.Fatalf("count blocked group failed: %v", err)
+	}
+	if blockedCount != 1 {
+		t.Fatalf("expected non-whitelisted identity to persist topology with public mode, got count=%d", blockedCount)
+	}
+
+	var allowedCount int
+	if err := s.store.db.QueryRow(`SELECT COUNT(1) FROM groups_meta WHERE group_name = ?`, "allowed-group").Scan(&allowedCount); err != nil {
+		t.Fatalf("count allowed group failed: %v", err)
+	}
+	if allowedCount != 1 {
+		t.Fatalf("expected whitelisted identity to persist topology, got count=%d", allowedCount)
+	}
+}
+
 func TestPersistModeQueuesOnlyForWhitelistedIdentities(t *testing.T) {
 	cfg := defaultTestServerConfig()
 	cfg.persistenceMode = persistenceModePersist
@@ -804,6 +865,119 @@ func TestPublicChannelAllowsAnyUserToInviteAndJoin(t *testing.T) {
 		}
 	}
 	t.Fatalf("channel message not delivered to joined member")
+}
+
+func TestJoinGroupWithoutChannelJoinsPublicChannelsOnly(t *testing.T) {
+	cfg := defaultTestServerConfig()
+	addr, _, stop := startTestServer(t, "s1", "", nil, cfg)
+	defer stop()
+
+	alice := newTestClient(t, addr)
+	defer alice.close()
+	charlie := newTestClient(t, addr)
+	defer charlie.close()
+
+	alice.sendAction(t, Packet{Type: "channel_create", Group: "hub", Channel: "general", Public: true})
+	alice.sendAction(t, Packet{Type: "channel_create", Group: "hub", Channel: "announcements", Public: true})
+	alice.sendAction(t, Packet{Type: "channel_create", Group: "hub", Channel: "ops", Public: false})
+	time.Sleep(160 * time.Millisecond)
+
+	charlie.sendAction(t, Packet{Type: "channel_join", Group: "hub", Channel: ""})
+
+	joined := make(map[string]bool)
+	deadlineJoin := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadlineJoin) && len(joined) < 2 {
+		p, err := charlie.recvMaybe(180 * time.Millisecond)
+		if err != nil {
+			continue
+		}
+		if p.Type == "channel_joined" && strings.TrimSpace(p.Group) == "hub" {
+			joined[strings.TrimSpace(p.Channel)] = true
+		}
+	}
+	if !joined["general"] || !joined["announcements"] {
+		t.Fatalf("expected joins for public channels, got: %+v", joined)
+	}
+	if joined["ops"] {
+		t.Fatalf("did not expect private channel join: %+v", joined)
+	}
+
+	alice.sendAction(t, Packet{Type: "channel_send", Group: "hub", Channel: "general", Body: "public-1"})
+	alice.sendAction(t, Packet{Type: "channel_send", Group: "hub", Channel: "announcements", Body: "public-2"})
+	alice.sendAction(t, Packet{Type: "channel_send", Group: "hub", Channel: "ops", Body: "private-1"})
+
+	seenBodies := make(map[string]bool)
+	deadlineDeliver := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadlineDeliver) {
+		p, err := charlie.recvMaybe(180 * time.Millisecond)
+		if err != nil {
+			continue
+		}
+		if p.Type == "channel_deliver" {
+			seenBodies[p.Body] = true
+		}
+		if seenBodies["public-1"] && seenBodies["public-2"] {
+			break
+		}
+	}
+	if !seenBodies["public-1"] || !seenBodies["public-2"] {
+		t.Fatalf("expected public deliveries, got: %+v", seenBodies)
+	}
+	if seenBodies["private-1"] {
+		t.Fatalf("did not expect private delivery, got: %+v", seenBodies)
+	}
+}
+
+func TestChannelCreateRejectsTooLongChannelName(t *testing.T) {
+	cfg := defaultTestServerConfig()
+	cfg.maxChannelNameLen = 8
+	addr, _, stop := startTestServer(t, "s1", "", nil, cfg)
+	defer stop()
+
+	alice := newTestClient(t, addr)
+	defer alice.close()
+
+	alice.sendAction(t, Packet{Type: "channel_create", Group: "dev", Channel: "channel-name-too-long", Public: true})
+
+	resp := alice.recv(t, 2*time.Second)
+	if resp.Type != "error" {
+		t.Fatalf("expected error, got %+v", resp)
+	}
+	if !strings.Contains(resp.Body, "channel_create failed: channel too long") {
+		t.Fatalf("unexpected error: %+v", resp)
+	}
+}
+
+func TestChannelCreateRejectsOverMaxChannelsPerGroup(t *testing.T) {
+	cfg := defaultTestServerConfig()
+	cfg.maxChannelsPerGroup = 2
+	addr, _, stop := startTestServer(t, "s1", "", nil, cfg)
+	defer stop()
+
+	alice := newTestClient(t, addr)
+	defer alice.close()
+
+	alice.sendAction(t, Packet{Type: "channel_create", Group: "dev", Channel: "one", Public: true})
+	alice.sendAction(t, Packet{Type: "channel_create", Group: "dev", Channel: "two", Public: true})
+	alice.sendAction(t, Packet{Type: "channel_create", Group: "dev", Channel: "three", Public: true})
+
+	sawError := false
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		p, err := alice.recvMaybe(200 * time.Millisecond)
+		if err != nil {
+			continue
+		}
+		if p.Type == "error" {
+			if strings.Contains(p.Body, "max channels per group reached") {
+				sawError = true
+				break
+			}
+		}
+	}
+	if !sawError {
+		t.Fatalf("expected max channels per group error")
+	}
 }
 
 func compressBodyForTest(t *testing.T, s string) string {

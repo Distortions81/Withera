@@ -8,7 +8,7 @@ Current clients:
 - Terminal client: `./client-tui`
 - Local web client: `./client-web`
 
-Both clients use the same signed user identity model and the same server protocol.
+Both clients use the same signed user identity model and the same node protocol.
 
 ## Shared client behavior
 
@@ -51,14 +51,14 @@ Primary characteristics:
   - Invite listing and acceptance
   - E2EE key status and key rotation
   - Identity helper commands (`/identities`, `/switchid`)
-- Persists known servers/channels and last context to profile UI state.
+- Persists known nodes/channels and last context to profile UI state.
 - Reconnect behavior restores active session behavior after transport interruptions.
 
 ## `client-web` current state
 
 Primary characteristics:
-- Local HTTP server + browser UI.
-- Sidebar model for friends and servers/groups/channels.
+- Local HTTP listener + browser UI.
+- Sidebar model for friends and nodes/groups/channels.
 - Group/channel UX supports create, invite, join, send, and invite accept/ignore/reject flows.
 - Profile editor and profile card viewing.
 - Presence controls (`visible`/`invisible` + TTL) and periodic keepalive.
@@ -78,7 +78,6 @@ Representative API surface used by the web UI includes:
 
 ## Known current constraints
 
-- Durability depends on server/node policy and mode (`live` vs `persist`).
+- Durability depends on node policy and mode (`live` vs `persist`).
 - Client-side persistence is local convenience/cache, not global authority.
 - Group/channel and delivery semantics depend on reachable relay-capable nodes.
-

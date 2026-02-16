@@ -171,10 +171,19 @@
       <h3 style="margin:0">Friends: <span id="friendsUserName" class="friends-user"></span></h3>
       <button id="logoutBtn" class="row-icon-btn" title="Logout and switch identity">Logout</button>
     </div>
+    <div class="small" style="margin:-2px 0 10px 0;">
+      Your user ID:
+      <span id="myUserIDText" style="word-break:break-all;"></span>
+      <span id="myUserIDCopy"></span>
+    </div>
     <div id="friendList" class="small friend-list"></div>
     <div class="header-row" style="margin-top:10px;">
-      <h3>Servers</h3>
-      <button id="serverCreateBtn" class="row-icon-btn" title="Create server/group" style="color:#8ecbff;">+</button>
+      <h3>Nodes</h3>
+      <div class="friend-controls">
+        <button id="groupJoinCodeBtn" class="row-icon-btn" title="Join via public invite code" style="color:#8ecbff;">code+</button>
+        <button id="groupInviteCodeBtn" class="row-icon-btn" title="Create public invite code for selected node" style="color:#8ecbff;">code</button>
+        <button id="serverCreateBtn" class="row-icon-btn" title="Create node/group" style="color:#8ecbff;">+</button>
+      </div>
     </div>
     <div id="groupList" class="small group-list"></div>
     <div class="header-row" style="margin-top:8px;">
@@ -225,7 +234,7 @@
         <h3 style="margin:0; flex:1;">Friend Actions</h3>
         <button id="friendEditorClose" style="width:auto; padding:4px 8px;" title="Close">X</button>
       </div>
-      <input id="friendInput" placeholder="friend login_id (or known alias/nickname)">
+      <input id="friendInput" placeholder="friend user_id (or known alias/nickname)">
       <div class="row">
         <button id="friendAdd">Friend Add</button>
       </div>
@@ -255,7 +264,7 @@
   </div>
   <div class="small muted">Nickname</div>
   <div id="cardNickname"></div>
-  <div class="small muted" style="margin-top:8px;">Login ID</div>
+  <div class="small muted" style="margin-top:8px;">User ID</div>
   <div id="cardID" style="white-space:pre-wrap; overflow-wrap:anywhere;"></div>
   <div class="small muted" style="margin-top:8px;">Profile text</div>
   <div id="cardProfile" style="white-space:pre-wrap; overflow-wrap:anywhere;"></div>
@@ -294,6 +303,8 @@ const inviteTitle = document.getElementById('inviteTitle');
 const inviteList = document.getElementById('inviteList');
 const profileIDCopy = document.getElementById('profileIDCopy');
 const friendsUserName = document.getElementById('friendsUserName');
+const myUserIDText = document.getElementById('myUserIDText');
+const myUserIDCopy = document.getElementById('myUserIDCopy');
 const presenceMode = document.getElementById('presenceMode');
 const presenceTTL = document.getElementById('presenceTTL');
 document.getElementById('profileClose').onclick = () => { profileCard.hidden = true; };
@@ -315,6 +326,7 @@ let pendingInviteKeys = {};
 let inviteGroup = '';
 let persistContextTimer = null;
 let selfLoginID = '';
+let selfUserID = '';
 let chatEvents = [];
 let unreadDM = {};
 let unreadGroupChannel = {};
@@ -538,7 +550,7 @@ function relativeTime(unixSec) {
   return `${days}d ago`;
 }
 
-function createCopyIDControl(loginID) {
+function createCopyIDControl(userID) {
   const wrap = document.createElement('span');
   wrap.className = 'id-copy-wrap';
   const tip = document.createElement('span');
@@ -552,13 +564,13 @@ function createCopyIDControl(loginID) {
   let resetTimer = null;
   btn.onmouseenter = () => { tip.textContent = 'copyid'; };
   btn.onclick = async () => {
-    if (!loginID) return;
+    if (!userID) return;
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
-        await navigator.clipboard.writeText(loginID);
+        await navigator.clipboard.writeText(userID);
       } else {
         const ta = document.createElement('textarea');
-        ta.value = loginID;
+        ta.value = userID;
         ta.style.position = 'fixed';
         ta.style.opacity = '0';
         document.body.appendChild(ta);
@@ -595,7 +607,7 @@ async function openProfileCard(loginID) {
     const p = data.profile || {};
     cardNickname.textContent = p.nickname || p.label || '(unknown)';
     cardID.innerHTML = '';
-    cardID.appendChild(createCopyIDControl(p.id || loginID));
+    cardID.appendChild(createCopyIDControl(p.user_id || p.id || loginID));
     cardProfile.textContent = p.profile_text || '(empty)';
     cardRefreshed.textContent = relativeTime(p.last_refreshed || 0);
     profileCard.hidden = false;
@@ -667,7 +679,7 @@ function renderTargets(targets, pendingFriends) {
     };
     controls.appendChild(info);
     controls.appendChild(status);
-    controls.appendChild(createCopyIDControl(t.id));
+    controls.appendChild(createCopyIDControl(t.user_id || t.id));
     const head = document.createElement('div');
     head.className = 'friend-head';
     head.appendChild(nameWrap);
@@ -686,7 +698,7 @@ function renderTargets(targets, pendingFriends) {
       const row = document.createElement('div');
       row.className = 'pending-row';
       const label = document.createElement('div');
-      label.textContent = `accept ${p.label} (${p.id})`;
+      label.textContent = `accept ${p.label} (${p.user_id || p.id})`;
       label.style.overflowWrap = 'anywhere';
       label.style.wordBreak = 'break-all';
       const actions = document.createElement('div');
@@ -739,7 +751,7 @@ function updatePendingInvites(invites) {
 }
 
 function openCreateServerDialog() {
-  const name = window.prompt('Server/Group name');
+  const name = window.prompt('Node/Group name');
   const group = (name || '').trim();
   if (!group) return;
   post('/api/group/create', {group, channel: 'default', public: true})
@@ -752,6 +764,46 @@ function openCreateServerDialog() {
       persistContextSoon();
     })
     .catch((e) => appendInfo(`group-create failed: ${e.message}`));
+}
+
+async function createPublicInviteCodeForActiveGroup() {
+  const group = (activeGroup || '').trim();
+  if (!group) {
+    appendInfo('Select a node first');
+    return;
+  }
+  try {
+    const data = await post('/api/group/public_code', {group});
+    const code = (data.code || '').trim();
+    if (!code) return;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(code);
+      }
+    } catch (_) {}
+    window.prompt('Share this public invite code', code);
+    appendInfo(`public invite code ready for ${group}`);
+  } catch (e) {
+    appendInfo(`public-code failed: ${e.message}`);
+  }
+}
+
+async function joinByPublicInviteCode() {
+  const code = window.prompt('Paste a public invite code');
+  if (!code) return;
+  try {
+    const data = await post('/api/group/join_code', {code});
+    const group = (data.group || '').trim();
+    if (group) {
+      activeGroup = group;
+      activeChannel = 'default';
+      activeTarget = '';
+    }
+    await poll();
+    persistContextSoon();
+  } catch (e) {
+    appendInfo(`join-code failed: ${e.message}`);
+  }
 }
 
 function openInviteDialog(group) {
@@ -769,7 +821,7 @@ function openInviteDialog(group) {
       cb.type = 'checkbox';
       cb.value = t.id;
       const txt = document.createElement('span');
-      txt.textContent = `${t.label} (${t.id})`;
+      txt.textContent = `${t.label} (${t.user_id || t.id})`;
       row.appendChild(cb);
       row.appendChild(txt);
       inviteList.appendChild(row);
@@ -784,7 +836,7 @@ function renderGroups(groups) {
   groupList.innerHTML = '';
   const items = latestGroups;
   if (items.length === 0) {
-    groupList.textContent = 'No servers joined yet';
+    groupList.textContent = 'No nodes joined yet';
     channelList.textContent = 'No channels';
     if (activeGroup || activeChannel !== 'default') changed = true;
     activeGroup = '';
@@ -825,17 +877,18 @@ function renderGroups(groups) {
     const infoBtn = document.createElement('button');
     infoBtn.type = 'button';
     infoBtn.className = 'row-icon-btn';
-    infoBtn.title = 'Server owner info';
+    infoBtn.title = 'Node owner info';
     infoBtn.textContent = 'i';
     infoBtn.onclick = async (ev) => {
       ev.stopPropagation();
       const ownerID = (g.owner_id || '').trim();
+      const ownerUserID = (g.owner_user_id || '').trim();
       const ownerLabel = (g.owner_label || '').trim();
       if (!ownerID) {
-        appendInfo(`server '${g.name || ''}' owner: unknown`);
+        appendInfo(`node '${g.name || ''}' owner: unknown`);
         return;
       }
-      appendInfo(`server '${g.name || ''}' owner: ${ownerLabel || ownerID} (${ownerID})`);
+      appendInfo(`node '${g.name || ''}' owner: ${ownerLabel || ownerUserID || ownerID} (${ownerUserID || ownerID})`);
       try { await openProfileCard(ownerID); } catch (_) {}
     };
     row.appendChild(infoBtn);
@@ -846,7 +899,7 @@ function renderGroups(groups) {
     del.textContent = '-';
     del.onclick = async (ev) => {
       ev.stopPropagation();
-      if (!window.confirm(`Remove server '${g.name || ''}' from this list?`)) return;
+      if (!window.confirm(`Remove node '${g.name || ''}' from this list?`)) return;
       try {
         await post('/api/group/remove', {group: g.name || ''});
         await poll();
@@ -918,9 +971,13 @@ async function bootstrap() {
   const res = await fetch('/api/bootstrap');
   const data = await res.json();
   selfLoginID = (data.login_id || '').trim();
+  selfUserID = (data.user_id || '').trim();
   friendsUserName.textContent = data.display_name || '(no nickname)';
+  myUserIDText.textContent = selfUserID || '(no user id)';
+  myUserIDCopy.innerHTML = '';
+  myUserIDCopy.appendChild(createCopyIDControl(selfUserID || data.login_id || ''));
   profileIDCopy.innerHTML = '';
-  profileIDCopy.appendChild(createCopyIDControl(data.login_id || ''));
+  profileIDCopy.appendChild(createCopyIDControl(selfUserID || data.login_id || ''));
   const minTTL = Number(data.presence_ttl_min || 180);
   const maxTTL = Number(data.presence_ttl_max || 900);
   presenceTTL.min = String(minTTL);
@@ -955,6 +1012,9 @@ let pollTimer = null;
 function resetUIForSetup() {
   since = 0;
   selfLoginID = '';
+  selfUserID = '';
+  myUserIDText.textContent = '';
+  myUserIDCopy.innerHTML = '';
   latestTargets = [];
   latestPendingFriends = [];
   latestPendingInvites = [];
@@ -1053,6 +1113,8 @@ document.getElementById('friendAdd').onclick = async () => {
 };
 
 document.getElementById('serverCreateBtn').onclick = openCreateServerDialog;
+document.getElementById('groupInviteCodeBtn').onclick = createPublicInviteCodeForActiveGroup;
+document.getElementById('groupJoinCodeBtn').onclick = joinByPublicInviteCode;
 
 document.getElementById('channelCreateBtn').onclick = async () => {
   if (!activeGroup) return;

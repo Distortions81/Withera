@@ -17,6 +17,7 @@ import (
 )
 
 func main() {
+	configPath := flag.String("config", "", "path to TOML configuration file")
 	listenAddr := flag.String("listen", ":9000", "tcp address to listen on")
 	advertiseAddr := flag.String("advertise", "", "public host:port to share with peers")
 	ownerClaim := flag.String("owner", "", "owner login id (sha256(pubkey))")
@@ -31,19 +32,75 @@ func main() {
 	burstMessages := flag.Int("burst", defaultBurstMessages, "burst packet allowance per connection")
 	maxSeen := flag.Int("max-seen", defaultMaxSeenEntries, "maximum dedupe IDs kept in memory")
 	maxKnownAddrs := flag.Int("max-known-addrs", defaultMaxKnownAddrs, "maximum known peer addresses kept in memory")
-	knownAddrTTL := flag.Duration("known-addr-ttl", defaultKnownAddrTTL, "known peer address TTL")
+	knownAddrTTLStr := flag.String("known-addr-ttl", defaultKnownAddrTTL.String(), "known peer address TTL")
 	relayEnabled := flag.Bool("relay", true, "relay messages across peer network")
 	clientMode := flag.String("client-mode", clientModePublic, "client access mode: public|private|disabled")
 	clientAllowCSV := flag.String("client-allow", "", "comma-separated login_id allowlist for client-mode=private")
 	persistenceMode := flag.String("persistence-mode", persistenceModeLive, "storage mode: live|persist")
 	persistenceDB := flag.String("persistence-db", "", "sqlite database path (used when persistence-mode=persist)")
 	persistAutoHost := flag.Bool("persist-auto-host", true, "auto-register authenticated users as hosted users in persist mode")
+	persistPublicTopology := flag.Bool("persist-public-topology", false, "persist group/channel metadata for all authenticated users in persist mode (not limited by client-allow)")
 	maxPendingMsgs := flag.Int("max-pending-msgs", 500, "maximum queued offline messages per hosted user in persist mode")
+	maxChannelsPerGroup := flag.Int("max-channels-per-group", defaultMaxChannelsPerGroup, "maximum channels allowed per group")
+	maxGroupNameLen := flag.Int("max-group-name-len", defaultMaxGroupNameRunes, "maximum group name length in characters")
+	maxChannelNameLen := flag.Int("max-channel-name-len", defaultMaxChannelNameRunes, "maximum channel name length in characters")
 	statsHTTP := flag.Bool("stats-http", true, "enable local HTTP stats page")
 	statsAddr := flag.String("stats-addr", "", "stats HTTP listen address (default derived from -listen)")
 	tlsCert := flag.String("tls-cert", "", "TLS certificate file path (auto-generated if missing)")
 	tlsKey := flag.String("tls-key", "", "TLS private key file path (auto-generated if missing)")
 	flag.Parse()
+
+	visited := make(map[string]bool)
+	flag.CommandLine.Visit(func(f *flag.Flag) {
+		visited[f.Name] = true
+	})
+
+	if strings.TrimSpace(*configPath) != "" {
+		cfg, err := loadNodeConfig(*configPath)
+		if err != nil {
+			log.Fatalf("config load failed: %v", err)
+		}
+		targets := map[string]any{
+			"listen":                  listenAddr,
+			"advertise":               advertiseAddr,
+			"owner":                   ownerClaim,
+			"sid":                     localSID,
+			"key":                     ownerKeyPath,
+			"peers":                   peersCSV,
+			"max-peers":               maxPeers,
+			"max-msg-bytes":           maxMsgBytes,
+			"max-uncompressed-bytes":  maxUncompressedBytes,
+			"max-expand-ratio":        maxExpandRatio,
+			"max-msgs-per-sec":        maxMsgsPerSec,
+			"burst":                   burstMessages,
+			"max-seen":                maxSeen,
+			"max-known-addrs":         maxKnownAddrs,
+			"known-addr-ttl":          knownAddrTTLStr,
+			"relay":                   relayEnabled,
+			"client-mode":             clientMode,
+			"client-allow":            clientAllowCSV,
+			"persistence-mode":        persistenceMode,
+			"persistence-db":          persistenceDB,
+			"persist-auto-host":       persistAutoHost,
+			"persist-public-topology": persistPublicTopology,
+			"max-pending-msgs":        maxPendingMsgs,
+			"max-channels-per-group":  maxChannelsPerGroup,
+			"max-group-name-len":      maxGroupNameLen,
+			"max-channel-name-len":    maxChannelNameLen,
+			"stats-http":              statsHTTP,
+			"stats-addr":              statsAddr,
+			"tls-cert":                tlsCert,
+			"tls-key":                 tlsKey,
+		}
+		if err := applyConfigToFlags(cfg, flag.CommandLine, visited, targets); err != nil {
+			log.Fatalf("config apply failed: %v", err)
+		}
+	}
+
+	knownAddrTTL, err := time.ParseDuration(strings.TrimSpace(*knownAddrTTLStr))
+	if err != nil {
+		log.Fatalf("invalid -known-addr-ttl: %v", err)
+	}
 
 	if strings.TrimSpace(*ownerKeyPath) == "" {
 		home, err := os.UserHomeDir()
@@ -85,7 +142,7 @@ func main() {
 		*burstMessages,
 		*maxSeen,
 		*maxKnownAddrs,
-		*knownAddrTTL,
+		knownAddrTTL,
 	)
 
 	s.maxUncompressedBytes = *maxUncompressedBytes
@@ -112,7 +169,20 @@ func main() {
 	}
 
 	s.persistAutoHost = *persistAutoHost
+	s.persistPublicTopology = *persistPublicTopology
 	s.maxPendingMsgs = *maxPendingMsgs
+	if *maxChannelsPerGroup <= 0 {
+		log.Fatalf("invalid -max-channels-per-group: must be > 0")
+	}
+	if *maxGroupNameLen <= 0 {
+		log.Fatalf("invalid -max-group-name-len: must be > 0")
+	}
+	if *maxChannelNameLen <= 0 {
+		log.Fatalf("invalid -max-channel-name-len: must be > 0")
+	}
+	s.maxChannelsPerGroup = *maxChannelsPerGroup
+	s.maxGroupNameRunes = *maxGroupNameLen
+	s.maxChannelNameRunes = *maxChannelNameLen
 	pmode := strings.ToLower(strings.TrimSpace(*persistenceMode))
 	switch pmode {
 	case persistenceModeLive, persistenceModePersist:
@@ -139,7 +209,7 @@ func main() {
 				log.Printf("sqlite close error: %v", err)
 			}
 		}()
-		log.Printf("persistence: mode=%s db=%s max-pending-msgs=%d auto-host=%t", s.persistenceMode, dbPath, s.maxPendingMsgs, s.persistAutoHost)
+		log.Printf("persistence: mode=%s db=%s max-pending-msgs=%d auto-host=%t public-topology=%t", s.persistenceMode, dbPath, s.maxPendingMsgs, s.persistAutoHost, s.persistPublicTopology)
 	} else {
 		log.Printf("persistence: mode=%s", s.persistenceMode)
 	}
@@ -197,7 +267,7 @@ func main() {
 	log.Printf("tls required cert=%s key=%s", *tlsCert, *tlsKey)
 	log.Printf("server %q listening on %s", s.id, *listenAddr)
 	log.Printf("owner login_id %q (key: %s)", ownerLoginID, *ownerKeyPath)
-	log.Printf("limits: max-msg-bytes=%d max-uncompressed-bytes=%d max-expand-ratio=%d max-msgs-per-sec=%d burst=%d max-seen=%d max-known-addrs=%d known-addr-ttl=%s", s.maxMessageBytes, s.maxUncompressedBytes, s.maxExpandRatio, s.maxMsgsPerSec, s.burstMessages, s.maxSeenEntries, s.maxKnownAddrs, s.knownAddrTTL)
+	log.Printf("limits: max-msg-bytes=%d max-uncompressed-bytes=%d max-expand-ratio=%d max-msgs-per-sec=%d burst=%d max-seen=%d max-known-addrs=%d known-addr-ttl=%s max-channels-per-group=%d max-group-name-len=%d max-channel-name-len=%d", s.maxMessageBytes, s.maxUncompressedBytes, s.maxExpandRatio, s.maxMsgsPerSec, s.burstMessages, s.maxSeenEntries, s.maxKnownAddrs, knownAddrTTL, s.maxChannelsPerGroup, s.maxGroupNameRunes, s.maxChannelNameRunes)
 	if s.advertiseAddr != "" {
 		log.Printf("advertising as %s", s.advertiseAddr)
 	}

@@ -4,7 +4,9 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -182,5 +184,66 @@ func TestParseFriendKeyRejectsIncompletePayload(t *testing.T) {
 	}
 	if err == nil {
 		t.Fatalf("expected incomplete payload rejection")
+	}
+}
+
+func TestUserIDRoundTrip(t *testing.T) {
+	raw := make([]byte, 32)
+	for i := range raw {
+		raw[i] = byte(i + 1)
+	}
+	loginID := hex.EncodeToString(raw)
+	userID := userIDForLoginID(loginID)
+	if strings.TrimSpace(userID) == "" {
+		t.Fatalf("expected non-empty user id")
+	}
+	got, ok := loginIDForUserID(userID)
+	if !ok {
+		t.Fatalf("expected successful decode")
+	}
+	if got != loginID {
+		t.Fatalf("roundtrip mismatch: got=%s want=%s", got, loginID)
+	}
+}
+
+func TestParseLoginIDTokenAcceptsBase58UserID(t *testing.T) {
+	raw := make([]byte, 32)
+	for i := range raw {
+		raw[i] = byte(255 - i)
+	}
+	loginID := hex.EncodeToString(raw)
+	userID := userIDForLoginID(loginID)
+	if userID == "" {
+		t.Fatalf("expected non-empty user id")
+	}
+	got, ok := parseLoginIDToken(userID)
+	if !ok {
+		t.Fatalf("expected parse ok")
+	}
+	if got != loginID {
+		t.Fatalf("parsed login id mismatch: got=%s want=%s", got, loginID)
+	}
+}
+
+func TestPublicGroupInviteCodeRoundTrip(t *testing.T) {
+	code, err := makePublicGroupInviteCode("dev", "127.0.0.1:9101")
+	if err != nil {
+		t.Fatalf("make code failed: %v", err)
+	}
+	if strings.TrimSpace(code) == "" {
+		t.Fatalf("expected non-empty code")
+	}
+	parsed, err := parsePublicGroupInviteCode(code)
+	if err != nil {
+		t.Fatalf("parse code failed: %v", err)
+	}
+	if parsed.Group != "dev" {
+		t.Fatalf("group mismatch: got=%s want=dev", parsed.Group)
+	}
+	if parsed.Addr != "127.0.0.1:9101" {
+		t.Fatalf("addr mismatch: got=%s", parsed.Addr)
+	}
+	if parsed.Scope != "public_group" {
+		t.Fatalf("scope mismatch: got=%s", parsed.Scope)
 	}
 }

@@ -10,7 +10,7 @@ go run ./client-web -addr 127.0.0.1:9101
 
 Options:
 
-- `-addr` protocol server address
+- `-addr` protocol node address
 - `-web` local HTTP listen address for the web UI (default `127.0.0.1:0`, ephemeral)
 - `-key` identity key path
 - `-contacts` contacts file path
@@ -19,9 +19,9 @@ Options:
 
 On startup it:
 
-1. Starts local HTTP server and serves a browser UI.
+1. Starts local HTTP listener and serves a browser UI.
 2. Lets you choose/create/restore identity in the web UI.
-3. Connects/authenticates to goAccord server after identity selection.
+3. Connects/authenticates to a goAccord node after identity selection.
 
 ## UI capabilities
 
