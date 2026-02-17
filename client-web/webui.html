@@ -624,6 +624,7 @@ let persistContextTimer = null;
 let selfLoginID = '';
 let selfUserID = '';
 let selfProfileImage = '';
+let selfDisplayName = '';
 let profileImageDirty = false;
 let chatEvents = [];
 let unreadDM = {};
@@ -1138,6 +1139,7 @@ function applySelfProfile(displayName, profileImage) {
   const name = (displayName || '').trim() || '(no nickname)';
   const img = (profileImage || '').trim();
   footerNickname.textContent = name;
+  selfDisplayName = (displayName || '').trim();
   selfProfileImage = img;
   setAvatarImage(footerAvatarImg, footerAvatarIcon, img);
   setAvatarImage(profileImagePreview, profileImagePreviewIcon, img);
