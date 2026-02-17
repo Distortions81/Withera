@@ -331,7 +331,7 @@
             <h1>Withera</h1>
             <span class="tag">Local accounts</span>
           </div>
-          <p class="sub">Select one identity and hit the login button. Use the helpers to create, backup, restore, or delete.</p>
+          <p class="sub">Select one identity and hit login. Identity files are password-encrypted; use a strong xkcd-style passphrase (4+ random words). If you lose both key file and recovery code/password, the identity is unrecoverable forever.</p>
           <div id="setupErr" class="error"></div>
           <div id="setupStatus" class="status" hidden>
             <span id="setupStatusSpinner" class="status-spin" aria-hidden="true"></span>
@@ -574,6 +574,21 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+
+function requestPassphrase(action, confirm=false) {
+  const msg = `${action}
+Use a strong xkcd-style passphrase (4+ random words).`;
+  const pass = window.prompt(msg, '');
+  if (pass === null) return null;
+  const trimmed = (pass || '').trim();
+  if (!trimmed) throw new Error('password required');
+  if (confirm) {
+    const second = window.prompt('Confirm password:', '');
+    if (second === null) return null;
+    if (trimmed !== (second || '').trim()) throw new Error('password confirmation mismatch');
+  }
+  return trimmed;
+}
 function showShareToast() {
   if (!shareToast) return;
   shareToast.hidden = false;
@@ -597,10 +612,15 @@ async function connectSelectedIdentity() {
   connectAbortController = new AbortController();
   const started = Date.now();
   try {
+    const password = requestPassphrase('Unlock identity for login');
+    if (password === null) {
+      setConnectBusy(false);
+      return;
+    }
     const res = await fetch('/api/setup/connect', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({path: selectedSetupPath}),
+      body: JSON.stringify({path: selectedSetupPath, password}),
       signal: connectAbortController.signal,
     });
     const data = await res.json().catch(() => ({}));
@@ -625,7 +645,9 @@ async function connectSelectedIdentity() {
 
 async function createIdentityFromSetup() {
   setupErr.textContent = '';
-  const created = await post('/api/setup/create', {});
+  const password = requestPassphrase('Set identity password', true);
+  if (password === null) return;
+  const created = await post('/api/setup/create', {password});
   const rec = (created.recovery_text || '').trim();
   const qr = (created.recovery_qr || '').trim();
   const shouldConnect = await new Promise((resolve) => {
@@ -648,7 +670,9 @@ async function backupSelectedIdentity() {
     return;
   }
   setupErr.textContent = '';
-  const pack = await post('/api/setup/backup', {path: selectedSetupPath});
+  const password = requestPassphrase('Enter password to unlock identity backup');
+  if (password === null) return;
+  const pack = await post('/api/setup/backup', {path: selectedSetupPath, password});
   await new Promise((resolve) => {
     recoveryMeta.textContent = `Backup for: ${pack.path || ''}  user_id: ${pack.user_id || ''}`;
     recoveryKeyEl.textContent = (pack.recovery_text || '').trim();
@@ -665,7 +689,9 @@ async function restoreIdentityFromSetup() {
     return;
   }
   setupErr.textContent = '';
-  const restored = await post('/api/setup/restore', {recovery_key: recovery});
+  const password = requestPassphrase('Set password for restored identity', true);
+  if (password === null) return;
+  const restored = await post('/api/setup/restore', {recovery_key: recovery, password});
   setupRecoveryInput.value = '';
   selectedSetupPath = restored.path || '';
   await refreshSetupUI();

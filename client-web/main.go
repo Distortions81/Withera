@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"compress/zlib"
 	"crypto/ecdh"
@@ -33,6 +32,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"filippo.io/age"
+	"filippo.io/age/armor"
 	"github.com/skip2/go-qrcode"
 	"withera/internal/apphome"
 	"withera/internal/netsec"
@@ -78,11 +79,17 @@ type signedAction struct {
 }
 
 type keyFile struct {
-	PrivateKey string `json:"private_key"`
+	PrivateKey   string `json:"private_key,omitempty"`
+	EncryptedKey string `json:"encrypted_key,omitempty"`
+	Encryption   string `json:"encryption,omitempty"`
+	LoginID      string `json:"login_id,omitempty"`
+	UserID       string `json:"user_id,omitempty"`
 }
 
 type e2eeKeyFile struct {
-	PrivateKey string `json:"private_key"`
+	PrivateKey   string `json:"private_key,omitempty"`
+	EncryptedKey string `json:"encrypted_key,omitempty"`
+	Encryption   string `json:"encryption,omitempty"`
 }
 
 type e2eeStateFile struct {
@@ -309,6 +316,7 @@ type webClient struct {
 	uiStatePath   string
 	e2eePath      string
 	e2eeStatePath string
+	keyPassphrase string
 
 	contacts              map[string]string
 	nicknames             map[string]string
@@ -2669,15 +2677,12 @@ func (c *webClient) rotateE2EEKey() (int, error) {
 	}
 	c.mu.Lock()
 	e2eePath := strings.TrimSpace(c.e2eePath)
+	passphrase := c.keyPassphrase
 	c.mu.Unlock()
 	if e2eePath == "" {
 		return 0, fmt.Errorf("missing e2ee key path")
 	}
-	payload, err := json.MarshalIndent(e2eeKeyFile{PrivateKey: base64.StdEncoding.EncodeToString(priv.Bytes())}, "", "  ")
-	if err != nil {
-		return 0, err
-	}
-	if err := writeFileAtomic(e2eePath, payload, 0o600); err != nil {
+	if err := saveE2EEKey(e2eePath, priv, passphrase); err != nil {
 		return 0, err
 	}
 
@@ -3290,24 +3295,6 @@ func defaultDisplayName() string {
 	return fmt.Sprintf("user%06d", time.Now().UnixNano()%1000000)
 }
 
-func promptDisplayName(current string) string {
-	current = strings.TrimSpace(current)
-	if current == "" {
-		current = defaultDisplayName()
-	}
-	fmt.Printf("Choose a display name (optional) [%s]: ", current)
-	reader := bufio.NewReader(os.Stdin)
-	line, err := reader.ReadString('\n')
-	if err != nil {
-		return current
-	}
-	name := strings.TrimSpace(line)
-	if name == "" {
-		return current
-	}
-	return name
-}
-
 func shortID(s string) string {
 	s = strings.TrimSpace(s)
 	if len(s) <= 12 {
@@ -3352,7 +3339,51 @@ func parseLoginIDToken(token string) (string, bool) {
 	return loginIDForUserID(token)
 }
 
-func loadKey(path string) (ed25519.PrivateKey, error) {
+func encryptWithPassphrase(passphrase string, plaintext []byte) (string, error) {
+	passphrase = strings.TrimSpace(passphrase)
+	if passphrase == "" {
+		return "", fmt.Errorf("password is required")
+	}
+	var out bytes.Buffer
+	armorWriter := armor.NewWriter(&out)
+	recipient, err := age.NewScryptRecipient(passphrase)
+	if err != nil {
+		return "", err
+	}
+	w, err := age.Encrypt(armorWriter, recipient)
+	if err != nil {
+		return "", err
+	}
+	if _, err := w.Write(plaintext); err != nil {
+		return "", err
+	}
+	if err := w.Close(); err != nil {
+		return "", err
+	}
+	if err := armorWriter.Close(); err != nil {
+		return "", err
+	}
+	return out.String(), nil
+}
+
+func decryptWithPassphrase(passphrase string, ciphertext string) ([]byte, error) {
+	passphrase = strings.TrimSpace(passphrase)
+	if passphrase == "" {
+		return nil, fmt.Errorf("password is required")
+	}
+	block := armor.NewReader(strings.NewReader(strings.TrimSpace(ciphertext)))
+	identity, err := age.NewScryptIdentity(passphrase)
+	if err != nil {
+		return nil, err
+	}
+	r, err := age.Decrypt(block, identity)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt failed: wrong password or corrupted key file")
+	}
+	return io.ReadAll(r)
+}
+
+func loadKey(path string, passphrase string) (ed25519.PrivateKey, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -3361,7 +3392,16 @@ func loadKey(path string) (ed25519.PrivateKey, error) {
 	if err := json.Unmarshal(data, &kf); err != nil {
 		return nil, err
 	}
-	raw, err := base64.StdEncoding.DecodeString(kf.PrivateKey)
+	if strings.TrimSpace(kf.EncryptedKey) != "" {
+		decrypted, err := decryptWithPassphrase(passphrase, kf.EncryptedKey)
+		if err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(decrypted, &kf); err != nil {
+			return nil, err
+		}
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(kf.PrivateKey))
 	if err != nil {
 		return nil, err
 	}
@@ -3371,24 +3411,33 @@ func loadKey(path string) (ed25519.PrivateKey, error) {
 	return ed25519.PrivateKey(raw), nil
 }
 
-func loadOrCreateKey(path string) (ed25519.PrivateKey, error) {
-	if data, err := os.ReadFile(path); err == nil {
-		_ = data
-		return loadKey(path)
+func loadOrCreateKey(path string, passphrase string) (ed25519.PrivateKey, error) {
+	if _, err := os.Stat(path); err == nil {
+		return loadKey(path, passphrase)
 	}
 
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err
 	}
-	return priv, saveIdentityKey(path, priv)
+	return priv, saveIdentityKey(path, priv, passphrase)
 }
 
-func saveIdentityKey(path string, priv ed25519.PrivateKey) error {
+func saveIdentityKey(path string, priv ed25519.PrivateKey, passphrase string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	payload, err := json.MarshalIndent(keyFile{PrivateKey: base64.StdEncoding.EncodeToString(priv)}, "", "  ")
+	loginID := loginIDForPubKey(priv.Public().(ed25519.PublicKey))
+	userID := userIDForLoginID(loginID)
+	inner, err := json.Marshal(keyFile{PrivateKey: base64.StdEncoding.EncodeToString(priv)})
+	if err != nil {
+		return err
+	}
+	encrypted, err := encryptWithPassphrase(passphrase, inner)
+	if err != nil {
+		return err
+	}
+	payload, err := json.MarshalIndent(keyFile{EncryptedKey: encrypted, Encryption: "age-scrypt-v1", LoginID: loginID, UserID: userID}, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -3406,32 +3455,53 @@ func e2eeStatePathForKey(home string, keyPath string) string {
 	return filepath.Join(apphome.BaseDirForKeyPath(home, keyPath), "e2ee", "e2ee-state-"+filepath.Base(strings.TrimSpace(keyPath))+".json")
 }
 
-func loadOrCreateE2EEKey(path string) (*ecdh.PrivateKey, string, error) {
+func parseE2EEKeyFile(data []byte, passphrase string) (*ecdh.PrivateKey, string, error) {
+	var kf e2eeKeyFile
+	if err := json.Unmarshal(data, &kf); err != nil {
+		return nil, "", err
+	}
+	if strings.TrimSpace(kf.EncryptedKey) != "" {
+		decrypted, err := decryptWithPassphrase(passphrase, kf.EncryptedKey)
+		if err != nil {
+			return nil, "", err
+		}
+		if err := json.Unmarshal(decrypted, &kf); err != nil {
+			return nil, "", err
+		}
+	}
+	return netsec.ParseX25519PrivateKeyB64(kf.PrivateKey)
+}
+
+func saveE2EEKey(path string, priv *ecdh.PrivateKey, passphrase string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	inner, err := json.Marshal(e2eeKeyFile{PrivateKey: base64.StdEncoding.EncodeToString(priv.Bytes())})
+	if err != nil {
+		return err
+	}
+	encrypted, err := encryptWithPassphrase(passphrase, inner)
+	if err != nil {
+		return err
+	}
+	payload, err := json.MarshalIndent(e2eeKeyFile{EncryptedKey: encrypted, Encryption: "age-scrypt-v1"}, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(path, payload, 0o600)
+}
+
+func loadOrCreateE2EEKey(path string, passphrase string) (*ecdh.PrivateKey, string, error) {
 	if data, err := os.ReadFile(path); err == nil {
 		if !isBlankJSONFile(data) {
-			var kf e2eeKeyFile
-			if err := json.Unmarshal(data, &kf); err != nil {
-				return nil, "", err
-			}
-			priv, pubB64, err := netsec.ParseX25519PrivateKeyB64(kf.PrivateKey)
-			if err != nil {
-				return nil, "", err
-			}
-			return priv, pubB64, nil
+			return parseE2EEKeyFile(data, passphrase)
 		}
 	}
 	priv, pubB64, err := netsec.NewX25519Identity()
 	if err != nil {
 		return nil, "", err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, "", err
-	}
-	payload, err := json.MarshalIndent(e2eeKeyFile{PrivateKey: base64.StdEncoding.EncodeToString(priv.Bytes())}, "", "  ")
-	if err != nil {
-		return nil, "", err
-	}
-	if err := writeFileAtomic(path, payload, 0o600); err != nil {
+	if err := saveE2EEKey(path, priv, passphrase); err != nil {
 		return nil, "", err
 	}
 	return priv, pubB64, nil
@@ -3776,69 +3846,6 @@ func recoveryQRDataURL(recoveryKey string) (string, error) {
 	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(png), nil
 }
 
-func promptIdentityBackup(path string, priv ed25519.PrivateKey, reader *bufio.Reader) {
-	pub := priv.Public().(ed25519.PublicKey)
-	fmt.Printf("\nNew identity created: %s\n", path)
-	fmt.Printf("login_id: %s\n", loginIDForPubKey(pub))
-	fmt.Println("Back up this identity now. Losing the key file means losing access to this identity.")
-
-	fmt.Print("Create a backup copy now? [Y/n]: ")
-	backupChoice, _ := reader.ReadString('\n')
-	backupChoice = strings.ToLower(strings.TrimSpace(backupChoice))
-	if backupChoice == "" || backupChoice == "y" || backupChoice == "yes" {
-		fmt.Print("Backup destination path (file or directory, blank to skip): ")
-		dst, _ := reader.ReadString('\n')
-		dst = strings.TrimSpace(dst)
-		if dst != "" {
-			savedPath, err := copyIdentityFile(path, dst)
-			if err != nil {
-				fmt.Printf("backup failed: %v\n", err)
-			} else {
-				fmt.Printf("backup saved: %s\n", savedPath)
-			}
-		}
-	}
-
-	fmt.Print("Show printable recovery text now? [Y/n]: ")
-	recoveryChoice, _ := reader.ReadString('\n')
-	recoveryChoice = strings.ToLower(strings.TrimSpace(recoveryChoice))
-	if recoveryChoice == "" || recoveryChoice == "y" || recoveryChoice == "yes" {
-		seedB58 := base58Encode(priv.Seed())
-		fmt.Println("Recovery text (Base58, keep offline/private):")
-		fmt.Println(groupedToken(seedB58, 5))
-		fmt.Println("Dashes are formatting only; ignore them when restoring.")
-		fmt.Println("This is sufficient to recover the identity if imported later.")
-	}
-	fmt.Println()
-}
-
-func restoreIdentityFromRecovery(home string, reader *bufio.Reader) (string, error) {
-	fmt.Print("Enter recovery text (Base58; dashes/spaces are ignored): ")
-	line, err := reader.ReadString('\n')
-	if err != nil {
-		return "", err
-	}
-	seed, err := base58Decode(line)
-	if err != nil {
-		return "", err
-	}
-	if len(seed) != ed25519.SeedSize {
-		return "", fmt.Errorf("invalid recovery seed length: got %d bytes, expected %d", len(seed), ed25519.SeedSize)
-	}
-	priv := ed25519.NewKeyFromSeed(seed)
-	idsDir := filepath.Join(apphome.CurrentDirWithHome(home), "identities")
-	if err := os.MkdirAll(idsDir, 0o700); err != nil {
-		return "", err
-	}
-	path := filepath.Join(idsDir, fmt.Sprintf("id-%d.json", time.Now().UnixNano()))
-	if err := saveIdentityKey(path, priv); err != nil {
-		return "", err
-	}
-	pub := priv.Public().(ed25519.PublicKey)
-	fmt.Printf("identity restored: %s [%s]\n\n", path, shortID(loginIDForPubKey(pub)))
-	return path, nil
-}
-
 func listIdentityCandidates(home string, currentPath string) []identityCandidate {
 	seen := make(map[string]struct{})
 	paths := make([]string, 0)
@@ -3879,14 +3886,29 @@ func listIdentityCandidates(home string, currentPath string) []identityCandidate
 	}
 	out := make([]identityCandidate, 0, len(paths))
 	for _, p := range paths {
-		priv, err := loadKey(p)
+		data, err := os.ReadFile(p)
 		if err != nil {
 			continue
 		}
-		pub := priv.Public().(ed25519.PublicKey)
-		loginID := loginIDForPubKey(pub)
+		var meta keyFile
+		if err := json.Unmarshal(data, &meta); err != nil {
+			continue
+		}
+		loginID := strings.TrimSpace(meta.LoginID)
+		userID := strings.TrimSpace(meta.UserID)
+		if !looksLikeLoginID(loginID) {
+			if strings.TrimSpace(meta.EncryptedKey) == "" {
+				priv, err := loadKey(p, "")
+				if err == nil {
+					loginID = loginIDForPubKey(priv.Public().(ed25519.PublicKey))
+				}
+			}
+		}
+		if userID == "" && looksLikeLoginID(loginID) {
+			userID = userIDForLoginID(loginID)
+		}
 		name, _, _, _, _, _, _, _, _ := loadProfile(profilePathForKey(home, p))
-		out = append(out, identityCandidate{Path: p, LoginID: loginID, UserID: userIDForLoginID(loginID), Name: strings.TrimSpace(name)})
+		out = append(out, identityCandidate{Path: p, LoginID: loginID, UserID: userID, Name: strings.TrimSpace(name)})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Path == currentPath {
@@ -3900,98 +3922,8 @@ func listIdentityCandidates(home string, currentPath string) []identityCandidate
 	return out
 }
 
-func promptIdentityPath(home string, currentPath string, conflictMode bool) (string, error) {
-	candidates := listIdentityCandidates(home, currentPath)
-	if conflictMode {
-		fmt.Println("login_id already connected on the node.")
-		fmt.Println("Choose a different identity:")
-	} else {
-		fmt.Println("Choose an identity to use:")
-	}
-	idx := 1
-	indexToPath := make(map[int]string)
-	for _, c := range candidates {
-		if conflictMode && c.Path == currentPath {
-			continue
-		}
-		currentMark := ""
-		if c.Path == currentPath {
-			currentMark = " [current]"
-		}
-		label := strings.TrimSpace(c.Name)
-		if label == "" {
-			label = shortID(c.LoginID)
-		}
-		fmt.Printf("  %d) %s [%s] (%s)%s\n", idx, label, shortID(c.LoginID), c.Path, currentMark)
-		indexToPath[idx] = c.Path
-		idx++
-	}
-	createIdx := idx
-	fmt.Printf("  %d) create a new identity\n", createIdx)
-	restoreIdx := createIdx + 1
-	fmt.Printf("  %d) restore identity from recovery text\n", restoreIdx)
-	fmt.Println("  q) quit")
-	fmt.Print("> ")
-
-	reader := bufio.NewReader(os.Stdin)
-	line, err := reader.ReadString('\n')
-	if err != nil {
-		return "", err
-	}
-	choice := strings.TrimSpace(line)
-	if strings.EqualFold(choice, "q") {
-		return "", fmt.Errorf("aborted by user")
-	}
-	n, err := strconv.Atoi(choice)
-	if err != nil {
-		return "", fmt.Errorf("invalid choice")
-	}
-	if p, ok := indexToPath[n]; ok {
-		return p, nil
-	}
-	if n == createIdx {
-		idsDir := filepath.Join(apphome.CurrentDirWithHome(home), "identities")
-		if err := os.MkdirAll(idsDir, 0o700); err != nil {
-			return "", err
-		}
-		path := filepath.Join(idsDir, fmt.Sprintf("id-%d.json", time.Now().UnixNano()))
-		priv, err := loadOrCreateKey(path)
-		if err != nil {
-			return "", err
-		}
-		promptIdentityBackup(path, priv, reader)
-		return path, nil
-	}
-	if n == restoreIdx {
-		return restoreIdentityFromRecovery(home, reader)
-	}
-	return "", fmt.Errorf("invalid choice")
-}
-
-func connectWithIdentitySelection(addr string, home string, initialKeyPath string) (string, ed25519.PrivateKey, net.Conn, *json.Encoder, <-chan netMsg, string, string, error) {
-	keyPath := initialKeyPath
-	for {
-		priv, err := loadOrCreateKey(keyPath)
-		if err != nil {
-			return "", nil, nil, nil, nil, "", "", fmt.Errorf("key load/create failed: %w", err)
-		}
-		conn, enc, events, loginID, pubB64, err := runAuth(addr, priv)
-		if err == nil {
-			return keyPath, priv, conn, enc, events, loginID, pubB64, nil
-		}
-		if !strings.Contains(err.Error(), "login id already connected") {
-			return "", nil, nil, nil, nil, "", "", err
-		}
-		nextKeyPath, pickErr := promptIdentityPath(home, keyPath, true)
-		if pickErr != nil {
-			return "", nil, nil, nil, nil, "", "", err
-		}
-		keyPath = nextKeyPath
-	}
-}
-
-func newWebClientForIdentity(serverAddr string, home string, keyPath string, contactsPath string, profilePath string) (*webClient, error) {
-	priv, err := loadOrCreateKey(keyPath)
+func newWebClientForIdentity(serverAddr string, home string, keyPath string, contactsPath string, profilePath string, passphrase string) (*webClient, error) {
+	priv, err := loadOrCreateKey(keyPath, passphrase)
 	if err != nil {
 		return nil, fmt.Errorf("key load/create failed: %w", err)
 	}
@@ -4002,7 +3934,7 @@ func newWebClientForIdentity(serverAddr string, home string, keyPath string, con
 
 	e2eePath := e2eePathForKey(home, keyPath)
 	e2eeStatePath := e2eeStatePathForKey(home, keyPath)
-	e2eePriv, e2eePubB64, err := loadOrCreateE2EEKey(e2eePath)
+	e2eePriv, e2eePubB64, err := loadOrCreateE2EEKey(e2eePath, passphrase)
 	if err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("e2ee key load failed: %w", err)
@@ -4053,6 +3985,7 @@ func newWebClientForIdentity(serverAddr string, home string, keyPath string, con
 		uiStatePath:           uiStatePath,
 		e2eePath:              e2eePath,
 		e2eeStatePath:         e2eeStatePath,
+		keyPassphrase:         passphrase,
 		contacts:              contacts,
 		nicknames:             nicknames,
 		peerProfiles:          peerProfiles,
@@ -4208,6 +4141,17 @@ func main() {
 		}
 		return filepath.Join(apphome.BaseDirWithHome(home), "profiles", "profile-"+filepath.Base(strings.TrimSpace(kp))+".json")
 	}
+	isEncryptedKeyFile := func(p string) (bool, error) {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return false, err
+		}
+		var meta keyFile
+		if err := json.Unmarshal(data, &meta); err != nil {
+			return false, nil
+		}
+		return strings.TrimSpace(meta.EncryptedKey) != "", nil
+	}
 	tryAutoConnect := func(chosen string) error {
 		chosen = strings.TrimSpace(chosen)
 		if chosen == "" {
@@ -4216,7 +4160,10 @@ func main() {
 		if _, err := os.Stat(resolveProfilePath(chosen)); err != nil {
 			return fmt.Errorf("profile not found")
 		}
-		c, err := newWebClientForIdentity(*serverAddr, home, chosen, *contactsPath, resolveProfilePath(chosen))
+		if encrypted, err := isEncryptedKeyFile(chosen); err == nil && encrypted {
+			return fmt.Errorf("password required (unlock identity via web UI)")
+		}
+		c, err := newWebClientForIdentity(*serverAddr, home, chosen, *contactsPath, resolveProfilePath(chosen), "")
 		if err != nil {
 			return err
 		}
@@ -4308,14 +4255,26 @@ func main() {
 		}
 		writeJSON(w, http.StatusOK, resp)
 	})
-	mux.HandleFunc("/api/setup/create", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/api/setup/create", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Password string `json:"password"`
+		}
+		if err := decodeJSON(r, &req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+			return
+		}
+		passphrase := strings.TrimSpace(req.Password)
+		if passphrase == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "password required (use a strong xkcd-style passphrase)"})
+			return
+		}
 		idsDir := filepath.Join(apphome.CurrentDirWithHome(home), "identities")
 		if err := os.MkdirAll(idsDir, 0o700); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
 		path := filepath.Join(idsDir, fmt.Sprintf("id-%d.json", time.Now().UnixNano()))
-		priv, err := loadOrCreateKey(path)
+		priv, err := loadOrCreateKey(path, passphrase)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
@@ -4338,7 +4297,8 @@ func main() {
 	})
 	mux.HandleFunc("/api/setup/backup", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			Path string `json:"path"`
+			Path     string `json:"path"`
+			Password string `json:"password"`
 		}
 		if err := decodeJSON(r, &req); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
@@ -4349,7 +4309,12 @@ func main() {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "identity path required"})
 			return
 		}
-		priv, err := loadKey(path)
+		passphrase := strings.TrimSpace(req.Password)
+		if passphrase == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "password required"})
+			return
+		}
+		priv, err := loadKey(path, passphrase)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
@@ -4373,6 +4338,7 @@ func main() {
 	mux.HandleFunc("/api/setup/restore", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			RecoveryKey string `json:"recovery_key"`
+			Password    string `json:"password"`
 		}
 		if err := decodeJSON(r, &req); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
@@ -4394,7 +4360,12 @@ func main() {
 		}
 		path := filepath.Join(idsDir, fmt.Sprintf("id-%d.json", time.Now().UnixNano()))
 		priv := ed25519.NewKeyFromSeed(seed)
-		if err := saveIdentityKey(path, priv); err != nil {
+		passphrase := strings.TrimSpace(req.Password)
+		if passphrase == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "password required (use a strong xkcd-style passphrase)"})
+			return
+		}
+		if err := saveIdentityKey(path, priv, passphrase); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
@@ -4404,7 +4375,8 @@ func main() {
 	})
 	mux.HandleFunc("/api/setup/connect", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			Path string `json:"path"`
+			Path     string `json:"path"`
+			Password string `json:"password"`
 		}
 		if err := decodeJSON(r, &req); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
@@ -4427,7 +4399,12 @@ func main() {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "already connected; restart client-web to switch identity"})
 			return
 		}
-		connectedClient, err := newWebClientForIdentity(*serverAddr, home, chosen, *contactsPath, resolveProfilePath(chosen))
+		passphrase := strings.TrimSpace(req.Password)
+		if passphrase == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "password required"})
+			return
+		}
+		connectedClient, err := newWebClientForIdentity(*serverAddr, home, chosen, *contactsPath, resolveProfilePath(chosen), passphrase)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
