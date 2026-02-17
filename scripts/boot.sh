@@ -12,7 +12,11 @@ NUM_CLIENTS="${NUM_CLIENTS:-2}"
 BASE_PORT="${BASE_PORT:-9101}"
 WEB_BASE_PORT="${WEB_BASE_PORT:-8080}"
 SID_PREFIX="${SID_PREFIX:-peer}"
-HOST="${HOST:-127.0.0.1}"
+# Bind on all interfaces by default, but keep advertise/dial defaults local for
+# local multi-node boot behavior unless explicitly overridden.
+BIND_HOST="${BIND_HOST:-${HOST:-0.0.0.0}}"
+ADVERTISE_HOST="${ADVERTISE_HOST:-127.0.0.1}"
+WEB_URL_HOST="${WEB_URL_HOST:-$ADVERTISE_HOST}"
 CLIENT_WEB_OPEN="${CLIENT_WEB_OPEN:-0}"
 
 NODES_RUNTIME_DIR="$ROOT_DIR/.run/nodes"
@@ -122,7 +126,7 @@ trap cleanup EXIT INT TERM HUP
 peer_addr() {
   local idx="$1"
   local port=$((BASE_PORT + idx - 1))
-  printf '%s:%s' "$HOST" "$port"
+  printf '%s:%s' "$ADVERTISE_HOST" "$port"
 }
 
 wait_for_tcp() {
@@ -151,7 +155,7 @@ start_node() {
   local key_file="$config_dir/owner-key.json"
   local db_file="$data_dir/state.sqlite"
   local log_file="$log_dir/node.log"
-  local listen_addr=":$((BASE_PORT + idx - 1))"
+  local listen_addr="${BIND_HOST}:$((BASE_PORT + idx - 1))"
   local advertise_addr="$(peer_addr "$idx")"
   local pid_file="$NODE_PID_DIR/$sid.pid"
 
@@ -192,15 +196,16 @@ start_node() {
   echo "$pid" > "$pid_file"
 
   echo "started $sid (pid $pid)"
+  echo "  bind: $listen_addr"
   echo "  node: $advertise_addr"
 }
 
 start_client() {
   local idx="$1"
   local sid="web${idx}"
-  local node_addr="$HOST:$((BASE_PORT + idx - 1))"
-  local web_addr="$HOST:$((WEB_BASE_PORT + idx - 1))"
-  local web_url="http://$web_addr"
+  local node_addr="$ADVERTISE_HOST:$((BASE_PORT + idx - 1))"
+  local web_addr="$BIND_HOST:$((WEB_BASE_PORT + idx - 1))"
+  local web_url="http://${WEB_URL_HOST}:$((WEB_BASE_PORT + idx - 1))"
   local pid_file="$CLIENT_PID_DIR/$sid.pid"
   local log_file="$CLIENT_LOG_DIR/$sid.log"
   local client_dir="$CLIENT_INSTANCES_DIR/$sid"
@@ -236,10 +241,10 @@ done
 echo "waiting for node ports..."
 for ((i=1; i<=NUM_NODES; i++)); do
   node_port=$((BASE_PORT + i - 1))
-  if wait_for_tcp "$HOST" "$node_port" 20; then
-    echo "  node ready: $HOST:$node_port"
+  if wait_for_tcp "$ADVERTISE_HOST" "$node_port" 20; then
+    echo "  node ready: $ADVERTISE_HOST:$node_port"
   else
-    echo "  node not ready yet: $HOST:$node_port"
+    echo "  node not ready yet: $ADVERTISE_HOST:$node_port"
   fi
 done
 
