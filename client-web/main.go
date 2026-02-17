@@ -32,7 +32,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode/utf8"
 
 	"github.com/skip2/go-qrcode"
 	"withera/internal/apphome"
@@ -2043,10 +2042,6 @@ func (c *webClient) handleGroupProfileSet(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "group required"})
 		return
 	}
-	if err := validateNameLikeNode("group", group, defaultMaxGroupNameBytes); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
 	icon, err := sanitizeGroupIconDataURL(req.Icon)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -2244,33 +2239,6 @@ func normalizeChannelName(v string) string {
 	return v
 }
 
-const (
-	defaultMaxGroupNameBytes   = 64
-	defaultMaxChannelNameBytes = 48
-)
-
-func validateNameLikeNode(kind string, value string, maxBytes int) error {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return fmt.Errorf("%s is required", kind)
-	}
-	if !utf8.ValidString(value) {
-		return fmt.Errorf("%s must be valid utf-8", kind)
-	}
-	if maxBytes <= 0 {
-		maxBytes = 1
-	}
-	if len(value) > maxBytes {
-		return fmt.Errorf("%s too long (max %d bytes)", kind, maxBytes)
-	}
-	for _, r := range value {
-		if r < 0x20 || r == 0x7f || r == '/' {
-			return fmt.Errorf("%s contains invalid character %q", kind, r)
-		}
-	}
-	return nil
-}
-
 type inviteKeyPayload struct {
 	From  string `json:"from"`
 	Group string `json:"group"`
@@ -2357,14 +2325,6 @@ func (c *webClient) handleGroupCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "group required"})
 		return
 	}
-	if err := validateNameLikeNode("group", group, defaultMaxGroupNameBytes); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	if err := validateNameLikeNode("channel", channel, defaultMaxChannelNameBytes); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
 	public := true
 	if req.Public != nil {
 		public = *req.Public
@@ -2392,14 +2352,6 @@ func (c *webClient) handleGroupJoin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "group required"})
 		return
 	}
-	if err := validateNameLikeNode("group", group, defaultMaxGroupNameBytes); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	if err := validateNameLikeNode("channel", channel, defaultMaxChannelNameBytes); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
 	if err := c.sendSigned(Packet{Type: "channel_join", Group: group, Channel: channel}); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
@@ -2423,14 +2375,6 @@ func (c *webClient) handleGroupSend(w http.ResponseWriter, r *http.Request) {
 	text := strings.TrimSpace(req.Text)
 	if group == "" || text == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "group and text required"})
-		return
-	}
-	if err := validateNameLikeNode("group", group, defaultMaxGroupNameBytes); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	if err := validateNameLikeNode("channel", channel, defaultMaxChannelNameBytes); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 	if err := c.sendSigned(Packet{Type: "channel_send", Group: group, Channel: channel, Body: text}); err != nil {

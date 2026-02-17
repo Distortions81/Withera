@@ -1357,17 +1357,6 @@ func validateBoundedName(kind string, value string, maxBytes int) (string, error
 	if strings.Contains(value, "/") {
 		return "", fmt.Errorf("%s cannot contain '/'", kind)
 	}
-	for _, r := range value {
-		if r < 0x20 || r == 0x7f {
-			return "", fmt.Errorf("%s contains invalid character %q", kind, r)
-		}
-		if r == '/' {
-			return "", fmt.Errorf("%s cannot contain '/'", kind)
-		}
-		if !utf8.ValidRune(r) {
-			return "", fmt.Errorf("%s contains invalid character %q", kind, r)
-		}
-	}
 	return value, nil
 }
 

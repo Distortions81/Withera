@@ -29,31 +29,6 @@ func buildSignedFriendKeyBody(t *testing.T, priv ed25519.PrivateKey, e2eePub str
 	return string(b)
 }
 
-func TestValidateNameLikeNodeAllowsSpacesAndUnicode(t *testing.T) {
-	if err := validateNameLikeNode("group", "Lumen Clay 世界", defaultMaxGroupNameBytes); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestValidateNameLikeNodeRejectsSlash(t *testing.T) {
-	if err := validateNameLikeNode("group", "Lumen/Clay", defaultMaxGroupNameBytes); err == nil {
-		t.Fatalf("expected error")
-	}
-}
-
-func TestValidateNameLikeNodeRejectsControl(t *testing.T) {
-	if err := validateNameLikeNode("group", "Lumen\nClay", defaultMaxGroupNameBytes); err == nil {
-		t.Fatalf("expected error")
-	}
-}
-
-func TestValidateNameLikeNodeEnforcesBytes(t *testing.T) {
-	name := strings.Repeat("a", defaultMaxGroupNameBytes+1)
-	if err := validateNameLikeNode("group", name, defaultMaxGroupNameBytes); err == nil {
-		t.Fatalf("expected error")
-	}
-}
-
 func TestParseFriendKeyValid(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

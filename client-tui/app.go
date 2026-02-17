@@ -24,7 +24,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
-	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -32,33 +31,6 @@ import (
 	"withera/internal/apphome"
 	"withera/internal/netsec"
 )
-
-const (
-	defaultMaxGroupNameBytes   = 64
-	defaultMaxChannelNameBytes = 48
-)
-
-func validateNodeName(kind string, value string, maxBytes int) error {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return fmt.Errorf("%s is required", kind)
-	}
-	if !utf8.ValidString(value) {
-		return fmt.Errorf("%s must be valid utf-8", kind)
-	}
-	if maxBytes <= 0 {
-		maxBytes = 1
-	}
-	if len(value) > maxBytes {
-		return fmt.Errorf("%s too long (max %d bytes)", kind, maxBytes)
-	}
-	for _, r := range value {
-		if r < 0x20 || r == 0x7f || r == '/' {
-			return fmt.Errorf("%s contains invalid character %q", kind, r)
-		}
-	}
-	return nil
-}
 
 type Packet struct {
 	Type        string `json:"type"`
@@ -1720,9 +1692,6 @@ func (m *model) handleCommand(line string) tea.Cmd {
 			return logLine("usage: /group <name>")
 		}
 		group := strings.TrimSpace(parts[1])
-		if err := validateNodeName("group", group, defaultMaxGroupNameBytes); err != nil {
-			return logLine(err.Error())
-		}
 		m.group = group
 		m.persistUIState()
 		return logLine("group set: " + m.group)
@@ -1731,9 +1700,6 @@ func (m *model) handleCommand(line string) tea.Cmd {
 			return logLine("usage: /channel <name>")
 		}
 		channel := strings.TrimSpace(parts[1])
-		if err := validateNodeName("channel", channel, defaultMaxChannelNameBytes); err != nil {
-			return logLine(err.Error())
-		}
 		m.channel = channel
 		m.persistUIState()
 		return logLine("channel set: " + m.channel)
@@ -1801,12 +1767,6 @@ func (m *model) handleCommand(line string) tea.Cmd {
 		}
 		group := strings.TrimSpace(parts[1])
 		channel := strings.TrimSpace(parts[2])
-		if err := validateNodeName("group", group, defaultMaxGroupNameBytes); err != nil {
-			return logLine(err.Error())
-		}
-		if err := validateNodeName("channel", channel, defaultMaxChannelNameBytes); err != nil {
-			return logLine(err.Error())
-		}
 		mode := strings.ToLower(strings.TrimSpace(parts[3]))
 		isPublic := mode == "public"
 		if mode != "public" && mode != "private" {
@@ -1841,12 +1801,6 @@ func (m *model) handleCommand(line string) tea.Cmd {
 		}
 		group := strings.TrimSpace(parts[1])
 		channel := strings.TrimSpace(parts[2])
-		if err := validateNodeName("group", group, defaultMaxGroupNameBytes); err != nil {
-			return logLine(err.Error())
-		}
-		if err := validateNodeName("channel", channel, defaultMaxChannelNameBytes); err != nil {
-			return logLine(err.Error())
-		}
 		if err := m.sendSigned(Packet{Type: "channel_join", Group: group, Channel: channel}); err != nil {
 			return logLine("channel-join error: " + err.Error())
 		}
@@ -1862,12 +1816,6 @@ func (m *model) handleCommand(line string) tea.Cmd {
 		}
 		group := strings.TrimSpace(parts[1])
 		channel := strings.TrimSpace(parts[2])
-		if err := validateNodeName("group", group, defaultMaxGroupNameBytes); err != nil {
-			return logLine(err.Error())
-		}
-		if err := validateNodeName("channel", channel, defaultMaxChannelNameBytes); err != nil {
-			return logLine(err.Error())
-		}
 		if err := m.sendSigned(Packet{Type: "channel_leave", Group: group, Channel: channel}); err != nil {
 			return logLine("channel-leave error: " + err.Error())
 		}

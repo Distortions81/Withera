@@ -1722,33 +1722,10 @@ function updatePendingInvites(invites) {
   renderChat();
 }
 
-const DEFAULT_MAX_GROUP_NAME_BYTES = 64;
-
-function validateNodeName(kind, value, maxBytes) {
-  const v = (value || '').trim();
-  if (!v) return `${kind} is required`;
-  if (v.includes('/')) return `${kind} cannot contain '/'`;
-  const cap = (typeof maxBytes === 'number' && maxBytes > 0) ? maxBytes : 1;
-  try {
-    const bytes = new TextEncoder().encode(v).length;
-    if (bytes > cap) return `${kind} too long (max ${cap} bytes)`;
-  } catch (_) {}
-  for (const ch of v) {
-    const cp = ch.codePointAt(0);
-    if (cp === 0x2F || cp < 0x20 || cp === 0x7F) return `${kind} contains invalid character '${ch}'`;
-  }
-  return '';
-}
-
 async function createGroupFromPanel() {
   const group = (groupCreateName.value || '').trim();
   if (!group) {
     groupCreateName.focus();
-    return;
-  }
-  const groupErr = validateNodeName('group', group, DEFAULT_MAX_GROUP_NAME_BYTES);
-  if (groupErr) {
-    appendInfo(`group-create failed: ${groupErr}`);
     return;
   }
   try {
