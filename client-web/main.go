@@ -353,9 +353,8 @@ type webClient struct {
 }
 
 const (
-	compressionNone  = "none"
-	compressionZlib  = "zlib"
-	compressMinBytes = 64
+	compressionNone = "none"
+	compressionZlib = "zlib"
 
 	presenceKeepaliveInterval = 5 * time.Minute
 	minPresenceTTLSec         = 180
@@ -2885,31 +2884,8 @@ func openBrowser(url string) {
 }
 
 func encodeBodyForSend(body string) (string, string, int, error) {
-	if len(body) < compressMinBytes {
-		return body, compressionNone, 0, nil
-	}
-	compressed, err := compressZlib([]byte(body))
-	if err != nil {
-		return "", "", 0, err
-	}
-	encoded := base64.StdEncoding.EncodeToString(compressed)
-	if len(encoded) >= len(body) {
-		return body, compressionNone, 0, nil
-	}
-	return encoded, compressionZlib, len(body), nil
-}
-
-func compressZlib(data []byte) ([]byte, error) {
-	var buf bytes.Buffer
-	zw := zlib.NewWriter(&buf)
-	if _, err := zw.Write(data); err != nil {
-		_ = zw.Close()
-		return nil, err
-	}
-	if err := zw.Close(); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
+	// Compression is disabled until the protocol finalizes and we add a binary mode.
+	return body, compressionNone, 0, nil
 }
 
 func decodeTextBodyForClient(p Packet) (string, error) {
