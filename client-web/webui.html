@@ -1572,11 +1572,30 @@ async function openProfileCard(loginID, anchorEl) {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || ('http ' + res.status));
     const p = data.profile || {};
+    const userID = ((p.user_id || '') + '').trim() || ((p.id || loginID || '') + '').trim();
     cardNickname.textContent = p.nickname || p.label || '(unknown)';
     cardID.innerHTML = '';
-    cardID.appendChild(createCopyIDControl(p.user_id || p.id || loginID));
+    cardID.style.display = 'flex';
+    cardID.style.alignItems = 'center';
+    cardID.style.gap = '8px';
+    const idText = document.createElement('span');
+    idText.textContent = userID || '(unknown)';
+    idText.className = 'linkish';
+    idText.setAttribute('role', 'button');
+    idText.tabIndex = 0;
+    const copyControl = createCopyIDControl(userID);
+    const copyBtn = copyControl.querySelector('.copy-id-btn');
+    idText.onclick = () => { if (copyBtn) copyBtn.click(); };
+    idText.onkeydown = (ev) => {
+      if (ev.key !== 'Enter' && ev.key !== ' ') return;
+      ev.preventDefault();
+      if (copyBtn) copyBtn.click();
+    };
+    cardID.appendChild(idText);
+    cardID.appendChild(copyControl);
     cardProfile.textContent = p.profile_text || '(empty)';
-    cardRefreshed.textContent = relativeTime(p.last_refreshed || 0);
+    const cardLoginID = ((p.id || loginID || '') + '').trim();
+    cardRefreshed.textContent = cardLoginID === selfLoginID ? 'just now' : relativeTime(p.last_refreshed || 0);
     placeProfileCardNear(anchorEl);
     profileCard.hidden = false;
   } catch (e) {
@@ -1674,12 +1693,30 @@ function renderTargets(targets, pendingFriends) {
     for (const p of pending) {
       const row = document.createElement('div');
       row.className = 'pending-row';
+      const head = document.createElement('div');
+      head.className = 'friend-head';
       const label = document.createElement('div');
-      label.textContent = `accept ${p.label} (${p.user_id || p.id})`;
+      label.textContent = p.label || 'unknown';
+      label.style.fontWeight = '700';
+      label.style.minWidth = '0';
+      label.style.flex = '1';
       label.style.overflowWrap = 'anywhere';
-      label.style.wordBreak = 'break-all';
+      label.style.wordBreak = 'break-word';
+      const avatar = createChatAvatar((p.id || '').trim());
+      head.appendChild(avatar);
+      head.appendChild(label);
       const actions = document.createElement('div');
       actions.className = 'pending-actions';
+      const info = document.createElement('button');
+      info.type = 'button';
+      info.className = 'row-icon-btn';
+      info.title = 'View profile';
+      info.setAttribute('aria-label', 'View profile');
+      info.textContent = 'i';
+      info.onclick = (ev) => {
+        ev.stopPropagation();
+        openProfileCard(p.id, info);
+      };
       const accept = document.createElement('button');
       accept.type = 'button';
       accept.textContent = 'Accept';
@@ -1698,9 +1735,10 @@ function renderTargets(targets, pendingFriends) {
           await poll();
         } catch (e) { appendInfo(`friend-ignore failed: ${e.message}`); }
       };
+      actions.appendChild(info);
       actions.appendChild(accept);
       actions.appendChild(ignore);
-      row.appendChild(label);
+      row.appendChild(head);
       row.appendChild(actions);
       friendList.appendChild(row);
     }
