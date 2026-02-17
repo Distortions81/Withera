@@ -205,9 +205,6 @@ start_client() {
   local log_file="$CLIENT_LOG_DIR/$sid.log"
   local client_dir="$CLIENT_INSTANCES_DIR/$sid"
   local client_home="$client_dir/home"
-  local client_key="$client_home/.withera/ed25519_key.json"
-  local client_contacts="$client_home/.withera/contacts.json"
-  local client_profile="$client_home/.withera/profiles/profile-ed25519_key.json"
 
   stop_from_pid_file "$sid" "$pid_file"
 
@@ -216,9 +213,6 @@ start_client() {
     -addr "$node_addr" \
     -web "$web_addr" \
     -open="$CLIENT_WEB_OPEN" \
-    -key "$client_key" \
-    -contacts "$client_contacts" \
-    -profile "$client_profile" \
     >"$log_file" 2>&1 &
   local pid="$!"
 
