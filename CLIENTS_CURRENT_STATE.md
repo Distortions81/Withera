@@ -16,6 +16,7 @@ Both clients use the same signed user identity model and the same node protocol.
 - Startup identity UX supports selecting or creating identities.
 - Login uses challenge/response signature auth.
 - Outgoing signed actions include direct messages, friend actions, profile, presence, and group/channel actions.
+- Group profile support via signed `group_profile_set` / `group_profile_get` (for owned groups).
 - Incoming packet handling includes direct/group delivery, friend updates, invites, profile/presence responses, and ping/pong.
 - Automatic reconnect is built in for connection drops.
 
@@ -60,6 +61,7 @@ Primary characteristics:
 - Local HTTP listener + browser UI.
 - Sidebar model for friends and nodes/groups/channels.
 - Group/channel UX supports create, invite, join, send, and invite accept/ignore/reject flows.
+- Group profile editor for owned groups (text + icon).
 - Profile editor and profile card viewing.
 - Presence controls (`visible`/`invisible` + TTL) and periodic keepalive.
 - Event polling endpoint drives incremental UI updates.
@@ -70,6 +72,7 @@ Representative API surface used by the web UI includes:
 - `/api/send`, `/api/group/send`
 - `/api/friend/add`, `/api/friend/accept`, `/api/friend/ignore`
 - `/api/group/create`, `/api/group/invite`, `/api/group/join`, `/api/group/remove`
+- `/api/group/profile/set`
 - `/api/invite/accept`, `/api/invite/ignore`, `/api/invite/reject`
 - `/api/profile/set`, `/api/profile/card`
 - `/api/presence/set`, `/api/presence/check`

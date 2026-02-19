@@ -15,9 +15,14 @@ go run ./client-tui -addr 127.0.0.1:9101
 Optional flags:
 - `-key <path>`: client private key file
 - `-contacts <path>`: contacts file (default `~/.withera/contacts.json`, or legacy `~/.goaccord/contacts.json`)
+- `-profile <path>`: profile file path (default is derived from the key filename under `~/.withera/profiles/`)
 - `-to <login_id|alias>`: initial recipient
 - `-group <name>`: initial group label
 - `-channel <name>`: initial channel label
+
+On startup:
+- Prompts to select/create/restore an identity key (default key path is `~/.withera/ed25519_key.json`, or legacy `~/.goaccord/ed25519_key.json`).
+- Connects/authenticates to a Withera node after identity selection.
 
 ## Commands
 - `/help`

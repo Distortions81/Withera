@@ -10,17 +10,17 @@ go run ./client-web -addr 127.0.0.1:9101
 
 Options:
 
-- `-addr` protocol node address
-- `-web` local HTTP listen address for the web UI (default `127.0.0.1:0`, ephemeral)
-- `-key` identity key path
-- `-contacts` contacts file path
-- `-profile` profile file path
-- `-open` auto-open browser (`true` default)
+- `-addr` protocol node address (default `127.0.0.1:9101`)
+- `-web` local HTTP listen address for the web UI (default `127.0.0.1:8080`)
+- `-key` identity key path (default `~/.withera/ed25519_key.json`, or legacy `~/.goaccord/ed25519_key.json`)
+- `-contacts` contacts file path (default `~/.withera/contacts.json`, or legacy `~/.goaccord/contacts.json`)
+- `-profile` profile file path (default is derived from the key filename under `~/.withera/profiles/`)
+- `-open` auto-open browser (default `false`)
 
 On startup it:
 
 1. Starts local HTTP listener and serves a browser UI.
-2. Lets you choose/create/restore identity in the web UI.
+2. Uses the most recently-used identity by default (unless `-key` is explicitly set), and lets you choose/create/restore identities in the web UI.
 3. Connects/authenticates to a Withera node after identity selection.
 
 ## UI capabilities

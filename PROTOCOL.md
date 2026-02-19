@@ -75,6 +75,8 @@ Action types currently accepted as signed actions:
 - `channel_send`
 - `profile_set`
 - `profile_get`
+- `group_profile_set`
+- `group_profile_get`
 - `presence_keepalive`
 
 Signature is verified against canonical JSON of:
@@ -118,10 +120,11 @@ On accept, node normalizes local processing to uncompressed body.
 ### Profile/presence
 
 - `profile_set` / `profile_get` produce `profile_data`.
+- `group_profile_set` / `group_profile_get` produce `group_profile_data`.
 - `profile_set` payload may include `profile_image` as an image data URL (`data:image/...;base64,...`).
 - Node enforces `profile_image` decoded size limit: max `16384` bytes (16 KiB); oversized payloads are rejected with protocol `error`.
 - `presence_keepalive` updates visibility state.
-- `presence_get` returns `presence_data`.
+- `presence_get` (non-signed request) returns `presence_data`.
 
 ## Relay Behavior
 

@@ -6,6 +6,11 @@ Withera is a decentralized chat prototype with these components:
 - `client-tui/`: terminal client.
 - `client-fyne/`: native desktop client (in-progress).
 
+## Prerequisites
+
+- Go `1.24.x` (see `go.mod` for the `toolchain` directive).
+- Optional for `client-fyne`: platform-specific GUI dependencies required by Fyne.
+
 ## How It Works (End User View)
 
 1. You create or restore an identity in a client.
@@ -45,6 +50,7 @@ Withera is a decentralized chat prototype with these components:
 - Logout/switch identity flow.
 - DM + friends workflow.
 - Group/channel create, join, invite, and messaging.
+- Group profile editor for owned groups (text + icon).
 - Public group invite code support.
 - Presence and profile UX.
 - E2EE DM key management and rotation.
@@ -78,6 +84,14 @@ This is the main quick-iteration command:
 - Shuts down all launched processes when you exit (for example `Ctrl+C` or terminal close).
 
 Web client ports are stable (`127.0.0.1:8080`, `127.0.0.1:8081`, ...), so you can keep tabs open and refresh quickly.
+
+Boot customization (via env vars):
+- `NUM_NODES` (default `3`)
+- `NUM_CLIENTS` (default `2`)
+- `BASE_PORT` (default `9101`)
+- `WEB_BASE_PORT` (default `8080`)
+- `BIND_HOST` (default `0.0.0.0`) and `ADVERTISE_HOST` (default `127.0.0.1`)
+- `CLIENT_WEB_OPEN=1` to auto-open browsers for launched web clients
 
 Runtime state is written under:
 - `.run/nodes/instances/<sid>/config/node.toml`
