@@ -1497,6 +1497,7 @@ func showLoginWindow(fy fyne.App, home string, defaultKeyPath string, defaultSer
 	)
 
 	w.SetContent(content)
+	w.CenterOnScreen()
 	w.SetCloseIntercept(func() {
 		w.Close()
 	})
@@ -2429,17 +2430,19 @@ func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, 
 	navMode := "friends"
 
 	selfLabel := widget.NewLabelWithStyle(emptyDash(ownDisplayName), fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
-	selfLabel.Wrapping = fyne.TextWrapWord
-
-	profileIconBtn := widget.NewButtonWithIcon("", theme.AccountIcon(), func() { profileBtn.OnTapped() })
-	presenceIconBtn := widget.NewButtonWithIcon("", theme.VisibilityIcon(), func() { presenceBtn.OnTapped() })
-	e2eeIconBtn := widget.NewButtonWithIcon("", theme.ConfirmIcon(), func() { e2eeBtn.OnTapped() })
-	logoutIconBtn := widget.NewButtonWithIcon("", theme.LogoutIcon(), func() { logoutBtn.OnTapped() })
+	selfLabel.Wrapping = fyne.TextWrapOff
+	selfLabel.Truncation = fyne.TextTruncateEllipsis
 
 	selfAvatar := widget.NewIcon(theme.AccountIcon())
 	selfIdentity := container.NewHBox(selfAvatar, selfLabel)
-	selfControls := container.NewHBox(profileIconBtn, presenceIconBtn, e2eeIconBtn, logoutIconBtn)
-	selfBar := container.NewBorder(nil, nil, nil, selfControls, selfIdentity)
+	selfControls := widget.NewToolbar(
+		widget.NewToolbarAction(theme.AccountIcon(), func() { profileBtn.OnTapped() }),
+		widget.NewToolbarAction(theme.VisibilityIcon(), func() { presenceBtn.OnTapped() }),
+		widget.NewToolbarAction(theme.ConfirmIcon(), func() { e2eeBtn.OnTapped() }),
+		widget.NewToolbarSeparator(),
+		widget.NewToolbarAction(theme.LogoutIcon(), func() { logoutBtn.OnTapped() }),
+	)
+	selfBar := container.NewBorder(nil, nil, selfIdentity, selfControls, layout.NewSpacer())
 
 	friendsHeader := container.NewBorder(nil, nil, nil,
 		container.NewHBox(addFriendBtn, acceptFriendBtn, ignoreFriendBtn),
@@ -2553,6 +2556,7 @@ func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, 
 	root.Offset = 0.33
 
 	w.SetContent(root)
+	w.CenterOnScreen()
 	w.SetCloseIntercept(func() {
 		doneOnce.Do(func() { close(done) })
 		state.closeConn()
