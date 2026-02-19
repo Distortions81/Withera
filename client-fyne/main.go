@@ -332,26 +332,6 @@ func (s *appState) displayPeer(id string) string {
 	return displayPeer(id, s.loginID, s.displayName, s.nicknames, s.contacts)
 }
 
-func (s *appState) resolveRecipient(token string) (string, bool) {
-	token = strings.TrimSpace(token)
-	if token == "" {
-		return "", false
-	}
-	s.mu.RLock()
-	for id, nick := range s.nicknames {
-		if strings.EqualFold(strings.TrimSpace(nick), token) && looksLikeLoginID(id) {
-			s.mu.RUnlock()
-			return id, true
-		}
-	}
-	if id, ok := s.contacts[token]; ok && looksLikeLoginID(id) {
-		s.mu.RUnlock()
-		return id, true
-	}
-	s.mu.RUnlock()
-	return parseLoginIDToken(token)
-}
-
 func cloneStringMap(in map[string]string) map[string]string {
 	out := make(map[string]string, len(in))
 	for k, v := range in {
@@ -2044,17 +2024,17 @@ func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, 
 			return
 		}
 		target := widget.NewEntry()
-		target.SetPlaceHolder("friend login_id, alias, nickname, or userID")
+		target.SetPlaceHolder("friend userID")
 		form := dialog.NewForm("Invite To Group", "Invite", "Cancel", []*widget.FormItem{
-			widget.NewFormItem("Target", target),
+			widget.NewFormItem("User ID", target),
 			widget.NewFormItem("Group", widget.NewLabel(group)),
 		}, func(ok bool) {
 			if !ok {
 				return
 			}
-			id, ok := state.resolveRecipient(target.Text)
+			id, ok := parseUserIDToken(target.Text)
 			if !ok {
-				dialog.ShowError(fmt.Errorf("unknown recipient"), w)
+				dialog.ShowError(fmt.Errorf("invalid user ID"), w)
 				return
 			}
 			if err := sendSigned(state, Packet{Type: "group_invite", To: id, Group: group}); err != nil {
