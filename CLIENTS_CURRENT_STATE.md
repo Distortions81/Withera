@@ -7,8 +7,9 @@ This document describes the current shipped client implementations in this repos
 Current clients:
 - Terminal client: `./client-tui`
 - Local web client: `./client-web`
+- Desktop GUI client: `./client-fyne`
 
-Both clients use the same signed user identity model and the same node protocol.
+All clients use the same signed user identity model and the same node protocol.
 
 ## Shared client behavior
 
@@ -78,6 +79,16 @@ Representative API surface used by the web UI includes:
 - `/api/presence/set`, `/api/presence/check`
 - `/api/context/set`
 - `/api/e2ee/rotate`
+
+## `client-fyne` current state
+
+Primary characteristics:
+- Fyne native desktop UI with identity selection, DM, friends, groups, and profile controls.
+- DM E2EE (X25519 + AES-GCM) with multi-device recipient support and key rotation.
+- Presence controls with periodic keepalive.
+- Group profile editor (text + icon) and peer profile viewing.
+- Automatic reconnect on transport drops.
+- Local persistence for contacts (`contacts.json`), profile, E2EE state, and UI context (`.ui.json`).
 
 ## Known current constraints
 

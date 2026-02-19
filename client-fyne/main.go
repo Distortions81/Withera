@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"compress/zlib"
+	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -10,10 +11,13 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"math/big"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -24,9 +28,11 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"withera/internal/apphome"
 	"withera/internal/netsec"
@@ -69,13 +75,15 @@ type keyFile struct {
 }
 
 type profileFile struct {
-	DisplayName string `json:"display_name"`
-	ProfileText string `json:"profile_text"`
+	DisplayName  string `json:"display_name"`
+	ProfileText  string `json:"profile_text"`
+	ProfileImage string `json:"profile_image,omitempty"`
 }
 
 type profilePayload struct {
-	Nickname    string `json:"nickname,omitempty"`
-	ProfileText string `json:"profile_text,omitempty"`
+	Nickname     string `json:"nickname,omitempty"`
+	ProfileText  string `json:"profile_text,omitempty"`
+	ProfileImage string `json:"profile_image,omitempty"`
 }
 
 type presenceDataPayload struct {
@@ -89,6 +97,17 @@ type identityCandidate struct {
 	Path    string
 	LoginID string
 	Name    string
+}
+
+type groupProfilePayload struct {
+	Group        string `json:"group"`
+	ProfileText  string `json:"profile_text,omitempty"`
+	ProfileImage string `json:"profile_image,omitempty"`
+}
+
+type presenceKeepalivePayload struct {
+	Visible bool `json:"visible"`
+	TTLSec  int  `json:"ttl_sec"`
 }
 
 type Conn struct {
@@ -127,13 +146,41 @@ type appState struct {
 
 	counter atomic.Uint64
 
+	serverAddr    string
+	keyPath       string
+	contactsPath  string
+	profilePath   string
+	uiStatePath   string
+	e2eePath      string
+	e2eeStatePath string
+
+	displayName  string
+	profileText  string
+	profileImage string
+
+	contacts map[string]string
+
 	friends       map[string]struct{}
 	pendingFriend map[string]struct{}
 	groups        map[string]map[string]struct{}
 	pendingInvite map[string]inviteEntry
 	nicknames     map[string]string
-	presence      map[string]string
-	presenceTTL   map[string]int
+	peerProfiles  map[string]profilePayload
+	groupProfiles map[string]groupProfilePayload
+
+	presence    map[string]string
+	presenceTTL map[string]int
+
+	presenceVisible bool
+	presenceTTLSec  int
+
+	e2eePriv        *ecdh.PrivateKey
+	e2eePubB64      string
+	peerE2EEMulti   map[string][]string
+	friendKeyNonces map[string]map[string]int64
+	e2eeIssues      map[string]string
+
+	lastContext chatContext
 
 	mode        chatMode
 	targetDM    string
@@ -149,14 +196,22 @@ type inviteEntry struct {
 
 func newAppState() *appState {
 	return &appState{
-		friends:       make(map[string]struct{}),
-		pendingFriend: make(map[string]struct{}),
-		groups:        make(map[string]map[string]struct{}),
-		pendingInvite: make(map[string]inviteEntry),
-		nicknames:     make(map[string]string),
-		presence:      make(map[string]string),
-		presenceTTL:   make(map[string]int),
-		mode:          chatModeDM,
+		contacts:        make(map[string]string),
+		friends:         make(map[string]struct{}),
+		pendingFriend:   make(map[string]struct{}),
+		groups:          make(map[string]map[string]struct{}),
+		pendingInvite:   make(map[string]inviteEntry),
+		nicknames:       make(map[string]string),
+		peerProfiles:    make(map[string]profilePayload),
+		groupProfiles:   make(map[string]groupProfilePayload),
+		presence:        make(map[string]string),
+		presenceTTL:     make(map[string]int),
+		presenceVisible: true,
+		presenceTTLSec:  300,
+		peerE2EEMulti:   make(map[string][]string),
+		friendKeyNonces: make(map[string]map[string]int64),
+		e2eeIssues:      make(map[string]string),
+		mode:            chatModeDM,
 	}
 }
 
@@ -171,6 +226,18 @@ func (s *appState) setConn(conn net.Conn, sender *Conn, priv ed25519.PrivateKey,
 	s.priv = priv
 	s.loginID = strings.TrimSpace(loginID)
 	s.counter.Store(0)
+}
+
+func (s *appState) configureSession(home string, serverAddr string, keyPath string, contactsPath string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.serverAddr = strings.TrimSpace(serverAddr)
+	s.keyPath = strings.TrimSpace(keyPath)
+	s.contactsPath = strings.TrimSpace(contactsPath)
+	s.profilePath = profilePathForKey(home, keyPath)
+	s.uiStatePath = uiStatePathForProfile(s.profilePath)
+	s.e2eePath = e2eePathForKey(home, keyPath)
+	s.e2eeStatePath = e2eeStatePathForKey(home, keyPath)
 }
 
 func (s *appState) closeConn() {
@@ -210,6 +277,7 @@ func (s *appState) setDMTarget(target string) {
 	defer s.mu.Unlock()
 	s.mode = chatModeDM
 	s.targetDM = strings.TrimSpace(target)
+	s.persistUIStateLocked()
 }
 
 func (s *appState) setGroupTarget(group string, channel string) {
@@ -221,12 +289,95 @@ func (s *appState) setGroupTarget(group string, channel string) {
 		channel = "default"
 	}
 	s.targetChan = strings.TrimSpace(channel)
+	s.persistUIStateLocked()
 }
 
 func (s *appState) currentTarget() (chatMode, string, string, string) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.mode, s.targetDM, s.targetGroup, s.targetChan
+}
+
+func (s *appState) currentContextLocked() chatContext {
+	switch s.mode {
+	case chatModeGroup:
+		if strings.TrimSpace(s.targetGroup) == "" {
+			return chatContext{}
+		}
+		ch := strings.TrimSpace(s.targetChan)
+		if ch == "" {
+			ch = "default"
+		}
+		return chatContext{Mode: "group", Group: strings.TrimSpace(s.targetGroup), Channel: ch}
+	default:
+		if looksLikeLoginID(strings.TrimSpace(s.targetDM)) {
+			return chatContext{Mode: "dm", Target: strings.TrimSpace(s.targetDM)}
+		}
+	}
+	return chatContext{}
+}
+
+func (s *appState) persistUIStateLocked() {
+	path := strings.TrimSpace(s.uiStatePath)
+	if path == "" {
+		return
+	}
+	s.lastContext = s.currentContextLocked()
+	_ = saveUIState(path, normalizeGroupEntries(s.groups), s.lastContext)
+}
+
+func (s *appState) displayPeer(id string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return displayPeer(id, s.loginID, s.displayName, s.nicknames, s.contacts)
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func (s *appState) setAlias(alias string, loginID string) error {
+	alias = strings.TrimSpace(alias)
+	loginID = strings.TrimSpace(loginID)
+	if alias == "" || !looksLikeLoginID(loginID) {
+		return fmt.Errorf("alias and login_id required")
+	}
+	s.mu.Lock()
+	if s.contacts == nil {
+		s.contacts = make(map[string]string)
+	}
+	s.contacts[alias] = loginID
+	path := strings.TrimSpace(s.contactsPath)
+	contacts := cloneStringMap(s.contacts)
+	s.mu.Unlock()
+	if path == "" {
+		return nil
+	}
+	return saveContacts(path, contacts)
+}
+
+func (s *appState) ensureContact(loginID string) {
+	loginID = strings.TrimSpace(loginID)
+	if !looksLikeLoginID(loginID) {
+		return
+	}
+	s.mu.Lock()
+	path := strings.TrimSpace(s.contactsPath)
+	changed := false
+	if s.contacts == nil {
+		s.contacts = make(map[string]string)
+	}
+	_, changed = ensureContact(loginID, s.loginID, s.contacts)
+	contacts := cloneStringMap(s.contacts)
+	s.mu.Unlock()
+	if !changed || path == "" {
+		return
+	}
+	_ = saveContacts(path, contacts)
 }
 
 func (s *appState) addFriend(id string) {
@@ -255,6 +406,58 @@ func (s *appState) setNickname(id string, nickname string) {
 	s.nicknames[id] = nickname
 }
 
+func (s *appState) upsertPeerProfile(id string, prof profilePayload) {
+	id = strings.TrimSpace(id)
+	if !looksLikeLoginID(id) {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cur := s.peerProfiles[id]
+	if strings.TrimSpace(prof.Nickname) != "" {
+		cur.Nickname = strings.TrimSpace(prof.Nickname)
+	}
+	if strings.TrimSpace(prof.ProfileText) != "" {
+		cur.ProfileText = strings.TrimSpace(prof.ProfileText)
+	}
+	if strings.TrimSpace(prof.ProfileImage) != "" {
+		cur.ProfileImage = strings.TrimSpace(prof.ProfileImage)
+	}
+	s.peerProfiles[id] = cur
+}
+
+func (s *appState) setOwnProfileFromServer(prof profilePayload) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if strings.TrimSpace(prof.Nickname) != "" {
+		s.displayName = strings.TrimSpace(prof.Nickname)
+	}
+	if strings.TrimSpace(prof.ProfileText) != "" {
+		s.profileText = strings.TrimSpace(prof.ProfileText)
+	}
+	if strings.TrimSpace(prof.ProfileImage) != "" {
+		s.profileImage = strings.TrimSpace(prof.ProfileImage)
+	}
+}
+
+func (s *appState) upsertGroupProfile(gp groupProfilePayload) {
+	group := normalizeGroupName(gp.Group)
+	if group == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cur := s.groupProfiles[group]
+	cur.Group = group
+	if strings.TrimSpace(gp.ProfileText) != "" {
+		cur.ProfileText = strings.TrimSpace(gp.ProfileText)
+	}
+	if strings.TrimSpace(gp.ProfileImage) != "" {
+		cur.ProfileImage = strings.TrimSpace(gp.ProfileImage)
+	}
+	s.groupProfiles[group] = cur
+}
+
 func (s *appState) setPresence(id string, value string, ttl int) {
 	id = strings.TrimSpace(id)
 	value = strings.TrimSpace(strings.ToLower(value))
@@ -278,14 +481,62 @@ func (s *appState) friendLabel(id string) string {
 	id = strings.TrimSpace(id)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	label := shortID(id)
-	if nick := strings.TrimSpace(s.nicknames[id]); nick != "" {
-		label = nick + " (" + shortID(id) + ")"
-	}
+	label := displayPeer(id, s.loginID, s.displayName, s.nicknames, s.contacts)
 	if p := strings.TrimSpace(s.presence[id]); p != "" {
 		label += " [" + p + "]"
 	}
+	if n := len(s.peerE2EEMulti[id]); n == 0 {
+		if issue := strings.TrimSpace(s.e2eeIssues[id]); issue != "" {
+			label += " [e2ee:invalid]"
+		} else {
+			label += " [e2ee:missing]"
+		}
+	} else if n == 1 {
+		label += " [e2ee:ready]"
+	} else {
+		label += fmt.Sprintf(" [e2ee:%d]", n)
+	}
 	return label
+}
+
+func normalizePresenceTTLSec(ttl int) int {
+	if ttl < 180 {
+		return 180
+	}
+	if ttl > 900 {
+		return 900
+	}
+	return ttl
+}
+
+func (s *appState) setPresenceConfig(visible bool, ttlSec int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.presenceVisible = visible
+	s.presenceTTLSec = normalizePresenceTTLSec(ttlSec)
+}
+
+func (s *appState) sendPresenceKeepalive() error {
+	s.mu.RLock()
+	visible := s.presenceVisible
+	ttl := normalizePresenceTTLSec(s.presenceTTLSec)
+	s.mu.RUnlock()
+	body, err := json.Marshal(presenceKeepalivePayload{Visible: visible, TTLSec: ttl})
+	if err != nil {
+		return err
+	}
+	return sendSigned(s, Packet{Type: "presence_keepalive", Body: string(body)})
+}
+
+func (s *appState) publishOwnProfile() error {
+	s.mu.RLock()
+	payload := profilePayload{Nickname: strings.TrimSpace(s.displayName), ProfileText: strings.TrimSpace(s.profileText), ProfileImage: strings.TrimSpace(s.profileImage)}
+	s.mu.RUnlock()
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return sendSigned(s, Packet{Type: "profile_set", Body: string(b)})
 }
 
 func (s *appState) addPendingFriend(id string) {
@@ -299,6 +550,16 @@ func (s *appState) addPendingFriend(id string) {
 		return
 	}
 	s.pendingFriend[id] = struct{}{}
+}
+
+func (s *appState) ignorePendingFriend(id string) {
+	id = strings.TrimSpace(id)
+	if !looksLikeLoginID(id) {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.pendingFriend, id)
 }
 
 func (s *appState) friendIDs() []string {
@@ -338,6 +599,28 @@ func (s *appState) rememberGroup(group string, channel string) {
 		s.groups[group] = make(map[string]struct{})
 	}
 	s.groups[group][channel] = struct{}{}
+	s.persistUIStateLocked()
+}
+
+func (s *appState) forgetGroupChannel(group string, channel string) {
+	group = normalizeGroupName(group)
+	channel = strings.TrimSpace(channel)
+	if group == "" {
+		return
+	}
+	if channel == "" {
+		channel = "default"
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.groups[group] == nil {
+		return
+	}
+	delete(s.groups[group], channel)
+	if len(s.groups[group]) == 0 {
+		delete(s.groups, group)
+	}
+	s.persistUIStateLocked()
 }
 
 func (s *appState) groupNames() []string {
@@ -435,6 +718,14 @@ func shortID(s string) string {
 		return s
 	}
 	return s[:12]
+}
+
+func emptyDash(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return "-"
+	}
+	return v
 }
 
 func normalizeGroupName(v string) string {
@@ -553,19 +844,19 @@ func loadDisplayName(home string, keyPath string) string {
 	return strings.TrimSpace(p.DisplayName)
 }
 
-func loadLocalProfile(home string, keyPath string) (string, string) {
+func loadLocalProfile(home string, keyPath string) (string, string, string) {
 	data, err := os.ReadFile(profilePathForKey(home, keyPath))
 	if err != nil {
-		return "", ""
+		return "", "", ""
 	}
 	var p profileFile
 	if json.Unmarshal(data, &p) != nil {
-		return "", ""
+		return "", "", ""
 	}
-	return strings.TrimSpace(p.DisplayName), strings.TrimSpace(p.ProfileText)
+	return strings.TrimSpace(p.DisplayName), strings.TrimSpace(p.ProfileText), strings.TrimSpace(p.ProfileImage)
 }
 
-func saveLocalProfile(home string, keyPath string, displayName string, profileText string) error {
+func saveLocalProfile(home string, keyPath string, displayName string, profileText string, profileImage string) error {
 	path := profilePathForKey(home, keyPath)
 	raw := make(map[string]any)
 	if data, err := os.ReadFile(path); err == nil {
@@ -573,6 +864,7 @@ func saveLocalProfile(home string, keyPath string, displayName string, profileTe
 	}
 	raw["display_name"] = strings.TrimSpace(displayName)
 	raw["profile_text"] = strings.TrimSpace(profileText)
+	raw["profile_image"] = strings.TrimSpace(profileImage)
 	payload, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
 		return err
@@ -749,6 +1041,42 @@ func groupedToken(s string, group int) string {
 	return strings.Join(parts, "-")
 }
 
+func imageDataURLFromBytes(raw []byte) (string, error) {
+	if len(raw) == 0 {
+		return "", fmt.Errorf("empty image")
+	}
+	if len(raw) > 16384 {
+		return "", fmt.Errorf("image too large: %d bytes (max 16384)", len(raw))
+	}
+	mime := http.DetectContentType(raw)
+	if !strings.HasPrefix(mime, "image/") {
+		return "", fmt.Errorf("unsupported image content type: %s", mime)
+	}
+	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(raw), nil
+}
+
+func parseDataURLImage(dataURL string) ([]byte, string, error) {
+	dataURL = strings.TrimSpace(dataURL)
+	if !strings.HasPrefix(dataURL, "data:") {
+		return nil, "", fmt.Errorf("not a data url")
+	}
+	parts := strings.SplitN(strings.TrimPrefix(dataURL, "data:"), ",", 2)
+	if len(parts) != 2 {
+		return nil, "", fmt.Errorf("invalid data url")
+	}
+	meta := parts[0]
+	b64 := parts[1]
+	if !strings.Contains(meta, ";base64") {
+		return nil, "", fmt.Errorf("data url not base64")
+	}
+	mime := strings.SplitN(meta, ";", 2)[0]
+	raw, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return nil, "", err
+	}
+	return raw, mime, nil
+}
+
 func decodeTextBodyForClient(p Packet) (string, error) {
 	comp := strings.ToLower(strings.TrimSpace(p.Compression))
 	if comp == "" {
@@ -901,17 +1229,31 @@ func sendRaw(s *appState, p Packet) error {
 }
 
 func main() {
+	addr := flag.String("addr", "127.0.0.1:9101", "server address")
+	keyPath := flag.String("key", "", "identity key file path")
+	contactsPath := flag.String("contacts", "", "contacts file path")
+	flag.Parse()
+
 	home, _ := os.UserHomeDir()
-	defaultKeyPath := filepath.Join(apphome.BaseDirWithHome(home), "ed25519_key.json")
+	baseDir := apphome.BaseDirWithHome(home)
+	defaultKeyPath := filepath.Join(baseDir, "ed25519_key.json")
+	if strings.TrimSpace(*keyPath) != "" {
+		defaultKeyPath = strings.TrimSpace(*keyPath)
+	}
+	defaultContactsPath := filepath.Join(baseDir, "contacts.json")
+	if strings.TrimSpace(*contactsPath) != "" {
+		defaultContactsPath = strings.TrimSpace(*contactsPath)
+	}
 
 	fy := app.NewWithID("io.withera.client.fyne")
+	fy.Settings().SetTheme(witheraTheme{})
 	state := newAppState()
 
-	showLoginWindow(fy, home, defaultKeyPath, state)
+	showLoginWindow(fy, home, defaultKeyPath, strings.TrimSpace(*addr), defaultContactsPath, state)
 	fy.Run()
 }
 
-func showLoginWindow(fy fyne.App, home string, defaultKeyPath string, state *appState) {
+func showLoginWindow(fy fyne.App, home string, defaultKeyPath string, defaultServerAddr string, contactsPath string, state *appState) {
 	w := fy.NewWindow("Withera Login")
 	w.Resize(fyne.NewSize(880, 620))
 
@@ -919,7 +1261,11 @@ func showLoginWindow(fy fyne.App, home string, defaultKeyPath string, state *app
 	subtitle := widget.NewLabel("Choose an identity, or create/restore one, then connect to a node.")
 
 	serverEntry := widget.NewEntry()
-	serverEntry.SetText("127.0.0.1:9101")
+	if strings.TrimSpace(defaultServerAddr) != "" {
+		serverEntry.SetText(strings.TrimSpace(defaultServerAddr))
+	} else {
+		serverEntry.SetText("127.0.0.1:9101")
+	}
 	serverEntry.SetPlaceHolder("node address")
 
 	identitySelect := widget.NewSelect([]string{}, nil)
@@ -1107,6 +1453,7 @@ func showLoginWindow(fy fyne.App, home string, defaultKeyPath string, state *app
 			showError(err)
 			return
 		}
+		state.configureSession(home, addr, selectedPath, contactsPath)
 		state.setConn(conn, sender, priv, loginID)
 		state.setDMTarget("")
 		status.SetText("Connected: " + shortID(loginID))
@@ -1160,10 +1507,75 @@ func showLoginWindow(fy fyne.App, home string, defaultKeyPath string, state *app
 func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, state *appState, events <-chan netMsg, loginWindow fyne.Window) {
 	w := fy.NewWindow("Withera")
 	w.Resize(fyne.NewSize(1180, 760))
+	done := make(chan struct{})
+	var doneOnce sync.Once
 	_, _, ownLoginID := state.snapshotConn()
-	ownDisplayName, ownProfileText := loadLocalProfile(home, keyPath)
-	if ownDisplayName == "" {
+	ownDisplayName, ownProfileText, ownProfileImage := loadLocalProfile(home, keyPath)
+	if strings.TrimSpace(ownDisplayName) == "" {
 		ownDisplayName = "user-" + shortID(ownLoginID)
+	}
+	state.mu.Lock()
+	state.displayName = strings.TrimSpace(ownDisplayName)
+	state.profileText = strings.TrimSpace(ownProfileText)
+	state.profileImage = strings.TrimSpace(ownProfileImage)
+	state.mu.Unlock()
+
+	state.mu.RLock()
+	contactsPath := strings.TrimSpace(state.contactsPath)
+	uiStatePath := strings.TrimSpace(state.uiStatePath)
+	e2eePath := strings.TrimSpace(state.e2eePath)
+	e2eeStatePath := strings.TrimSpace(state.e2eeStatePath)
+	state.mu.RUnlock()
+
+	if contactsPath != "" {
+		if contacts, err := loadContacts(contactsPath); err == nil {
+			state.mu.Lock()
+			state.contacts = contacts
+			state.mu.Unlock()
+		}
+	}
+	if uiStatePath != "" {
+		if savedGroups, savedCtx, err := loadUIState(uiStatePath); err == nil {
+			state.mu.Lock()
+			for _, g := range savedGroups {
+				group := normalizeGroupName(g.Name)
+				if group == "" {
+					continue
+				}
+				if state.groups[group] == nil {
+					state.groups[group] = make(map[string]struct{})
+				}
+				if len(g.Channels) == 0 {
+					state.groups[group]["default"] = struct{}{}
+					continue
+				}
+				for _, ch := range g.Channels {
+					ch = strings.TrimSpace(ch)
+					if ch == "" {
+						continue
+					}
+					state.groups[group][ch] = struct{}{}
+				}
+			}
+			state.lastContext = savedCtx
+			state.mu.Unlock()
+		}
+	}
+	if e2eePath != "" {
+		if e2eePriv, e2eePubB64, err := loadOrCreateE2EEKey(e2eePath); err == nil {
+			state.mu.Lock()
+			state.e2eePriv = e2eePriv
+			state.e2eePubB64 = e2eePubB64
+			state.mu.Unlock()
+		}
+	}
+	if e2eeStatePath != "" {
+		if peerKeys, nonces, err := loadE2EEState(e2eeStatePath); err == nil {
+			state.mu.Lock()
+			state.peerE2EEMulti = peerKeys
+			state.friendKeyNonces = nonces
+			state.mu.Unlock()
+		}
 	}
 
 	var chatMu sync.Mutex
@@ -1230,6 +1642,7 @@ func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, 
 		if !looksLikeLoginID(id) {
 			return
 		}
+		state.ensureContact(id)
 		state.setDMTarget(id)
 		targetLabel.SetText("DM: " + state.friendLabel(id))
 		appendInfo("chat mode: dm -> "+shortID(id), infoEntry)
@@ -1248,6 +1661,7 @@ func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, 
 		state.setGroupTarget(group, channel)
 		targetLabel.SetText("Group: " + group + "/" + channel)
 		appendInfo("chat mode: group -> "+group+"/"+channel, infoEntry)
+		_ = sendSigned(state, Packet{Type: "group_profile_get", Group: group})
 	}
 
 	friendsList.OnSelected = func(id widget.ListItemID) {
@@ -1339,8 +1753,7 @@ func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, 
 	chatEntry.Disable()
 	chatEntry.SetMinRowsVisible(24)
 
-	messageEntry := widget.NewMultiLineEntry()
-	messageEntry.SetMinRowsVisible(3)
+	messageEntry := widget.NewEntry()
 	messageEntry.SetPlaceHolder("Type message")
 
 	refreshLists := func() {
@@ -1395,7 +1808,12 @@ func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, 
 				appendInfo("select a friend for DM", infoEntry)
 				return
 			}
-			err = sendSigned(state, Packet{Type: "send", To: dm, Body: body})
+			encryptedBody, encErr := state.encryptDirectMessage(dm, body)
+			if encErr != nil {
+				appendInfo(encErr.Error(), infoEntry)
+				return
+			}
+			err = sendSigned(state, Packet{Type: "send", To: dm, Body: encryptedBody})
 			if err == nil {
 				appendChat(fmt.Sprintf("you -> %s: %s", state.friendLabel(dm), body), chatEntry)
 			}
@@ -1406,6 +1824,9 @@ func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, 
 		}
 		messageEntry.SetText("")
 	})
+	messageEntry.OnSubmitted = func(_ string) {
+		sendBtn.OnTapped()
+	}
 
 	addFriendBtn := widget.NewButton("Add", func() {
 		entry := widget.NewEntry()
@@ -1421,7 +1842,7 @@ func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, 
 				dialog.ShowError(fmt.Errorf("invalid login_id"), w)
 				return
 			}
-			if err := sendSigned(state, Packet{Type: "friend_add", To: target}); err != nil {
+			if err := sendSigned(state, Packet{Type: "friend_add", To: target, Body: state.friendKeyBody()}); err != nil {
 				dialog.ShowError(err, w)
 				return
 			}
@@ -1441,14 +1862,31 @@ func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, 
 			appendInfo("invalid pending friend", infoEntry)
 			return
 		}
-		if err := sendSigned(state, Packet{Type: "friend_accept", To: target}); err != nil {
+		if err := sendSigned(state, Packet{Type: "friend_accept", To: target, Body: state.friendKeyBody()}); err != nil {
 			appendInfo("accept failed: "+err.Error(), infoEntry)
 			return
 		}
 		state.addFriend(target)
+		state.ensureContact(target)
 		refreshLists()
 		appendInfo("friend accepted: "+shortID(target), infoEntry)
 		setDMContext(target)
+	})
+
+	ignoreFriendBtn := widget.NewButton("Ignore", func() {
+		id := selectedPending
+		if id < 0 || id >= len(pendingIDs) {
+			appendInfo("select a pending friend", infoEntry)
+			return
+		}
+		target := strings.TrimSpace(pendingIDs[id])
+		if !looksLikeLoginID(target) {
+			appendInfo("invalid pending friend", infoEntry)
+			return
+		}
+		state.ignorePendingFriend(target)
+		refreshLists()
+		appendInfo("friend request ignored: "+shortID(target), infoEntry)
 	})
 
 	createGroupBtn := widget.NewButton("Create", func() {
@@ -1551,6 +1989,124 @@ func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, 
 		form.Show()
 	})
 
+	leaveChannelBtn := widget.NewButton("Leave", func() {
+		mode, _, group, channel := state.currentTarget()
+		if mode != chatModeGroup || strings.TrimSpace(group) == "" {
+			appendInfo("switch to a group/channel first", infoEntry)
+			return
+		}
+		if strings.TrimSpace(channel) == "" {
+			channel = "default"
+		}
+		if err := sendSigned(state, Packet{Type: "channel_leave", Group: group, Channel: channel}); err != nil {
+			appendInfo("leave failed: "+err.Error(), infoEntry)
+			return
+		}
+		state.forgetGroupChannel(group, channel)
+		if selectedGroup == group {
+			refreshChannels()
+		}
+		refreshLists()
+		appendInfo("left channel "+group+"/"+channel, infoEntry)
+		state.setDMTarget("")
+		targetLabel.SetText("DM: choose a friend")
+	})
+
+	groupProfileBtn := widget.NewButton("Group Profile", func() {
+		mode, _, group, _ := state.currentTarget()
+		if mode != chatModeGroup || strings.TrimSpace(group) == "" {
+			appendInfo("switch to a group first", infoEntry)
+			return
+		}
+		group = normalizeGroupName(group)
+		if group == "" {
+			appendInfo("invalid group", infoEntry)
+			return
+		}
+		state.mu.RLock()
+		cur := state.groupProfiles[group]
+		state.mu.RUnlock()
+
+		textEntry := widget.NewMultiLineEntry()
+		textEntry.SetMinRowsVisible(4)
+		textEntry.SetText(strings.TrimSpace(cur.ProfileText))
+
+		selectedImage := strings.TrimSpace(cur.ProfileImage)
+		imageLabel := widget.NewLabel("")
+		updateImageLabel := func() {
+			if strings.TrimSpace(selectedImage) == "" {
+				imageLabel.SetText("Image: (none)")
+				return
+			}
+			raw, mime, err := parseDataURLImage(selectedImage)
+			if err != nil {
+				imageLabel.SetText("Image: (invalid)")
+				return
+			}
+			imageLabel.SetText(fmt.Sprintf("Image: %s (%d bytes)", mime, len(raw)))
+		}
+		updateImageLabel()
+
+		chooseBtn := widget.NewButton("Choose Image", func() {
+			fd := dialog.NewFileOpen(func(rc fyne.URIReadCloser, err error) {
+				if err != nil {
+					dialog.ShowError(err, w)
+					return
+				}
+				if rc == nil {
+					return
+				}
+				defer rc.Close()
+				raw, err := io.ReadAll(io.LimitReader(rc, 16384+1))
+				if err != nil {
+					dialog.ShowError(err, w)
+					return
+				}
+				du, err := imageDataURLFromBytes(raw)
+				if err != nil {
+					dialog.ShowError(err, w)
+					return
+				}
+				selectedImage = du
+				updateImageLabel()
+			}, w)
+			fd.Show()
+		})
+		clearBtn := widget.NewButton("Clear Image", func() {
+			selectedImage = ""
+			updateImageLabel()
+		})
+		refreshBtn := widget.NewButton("Refresh", func() {
+			_ = sendSigned(state, Packet{Type: "group_profile_get", Group: group})
+			appendInfo("requested group profile for "+group, infoEntry)
+		})
+
+		content := container.NewVBox(
+			widget.NewLabel("Group: "+group),
+			textEntry,
+			container.NewHBox(chooseBtn, clearBtn, refreshBtn),
+			imageLabel,
+		)
+		dlg := dialog.NewCustomConfirm("Group Profile", "Save", "Cancel", content, func(ok bool) {
+			if !ok {
+				return
+			}
+			payload, err := json.Marshal(groupProfilePayload{Group: group, ProfileText: strings.TrimSpace(textEntry.Text), ProfileImage: strings.TrimSpace(selectedImage)})
+			if err != nil {
+				dialog.ShowError(err, w)
+				return
+			}
+			if err := sendSigned(state, Packet{Type: "group_profile_set", Group: group, Body: string(payload)}); err != nil {
+				dialog.ShowError(err, w)
+				return
+			}
+			state.upsertGroupProfile(groupProfilePayload{Group: group, ProfileText: strings.TrimSpace(textEntry.Text), ProfileImage: strings.TrimSpace(selectedImage)})
+			appendInfo("group profile updated: "+group, infoEntry)
+		}, w)
+		dlg.Resize(fyne.NewSize(680, 420))
+		dlg.Show()
+	})
+
 	acceptInviteBtn := widget.NewButton("Accept", func() {
 		id := selectedInvite
 		if id < 0 || id >= len(invitesData) {
@@ -1570,6 +2126,18 @@ func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, 
 		appendInfo("invite accepted for "+inv.Group+"/"+inv.Channel, infoEntry)
 	})
 
+	ignoreInviteBtn := widget.NewButton("Ignore", func() {
+		id := selectedInvite
+		if id < 0 || id >= len(invitesData) {
+			appendInfo("select an invite", infoEntry)
+			return
+		}
+		inv := invitesData[id]
+		state.removeInvite(inv.From, inv.Group, inv.Channel)
+		refreshLists()
+		appendInfo("invite ignored for "+inv.Group+"/"+inv.Channel, infoEntry)
+	})
+
 	rejectInviteBtn := widget.NewButton("Reject", func() {
 		id := selectedInvite
 		if id < 0 || id >= len(invitesData) {
@@ -1587,46 +2155,111 @@ func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, 
 	})
 
 	profileBtn := widget.NewButton("Profile", func() {
+		state.mu.RLock()
+		curName := strings.TrimSpace(state.displayName)
+		curText := strings.TrimSpace(state.profileText)
+		curImage := strings.TrimSpace(state.profileImage)
+		state.mu.RUnlock()
+
 		nameEntry := widget.NewEntry()
-		nameEntry.SetText(strings.TrimSpace(ownDisplayName))
+		nameEntry.SetText(curName)
 		textEntry := widget.NewMultiLineEntry()
-		textEntry.SetText(strings.TrimSpace(ownProfileText))
+		textEntry.SetText(curText)
 		textEntry.SetMinRowsVisible(4)
-		form := dialog.NewForm("Edit Profile", "Save", "Cancel", []*widget.FormItem{
-			widget.NewFormItem("Display name", nameEntry),
-			widget.NewFormItem("Profile text", textEntry),
-		}, func(ok bool) {
+
+		selectedImage := curImage
+		imageLabel := widget.NewLabel("")
+		updateImageLabel := func() {
+			if strings.TrimSpace(selectedImage) == "" {
+				imageLabel.SetText("Image: (none)")
+				return
+			}
+			raw, mime, err := parseDataURLImage(selectedImage)
+			if err != nil {
+				imageLabel.SetText("Image: (invalid)")
+				return
+			}
+			imageLabel.SetText(fmt.Sprintf("Image: %s (%d bytes)", mime, len(raw)))
+		}
+		updateImageLabel()
+
+		chooseBtn := widget.NewButton("Choose Image", func() {
+			fd := dialog.NewFileOpen(func(rc fyne.URIReadCloser, err error) {
+				if err != nil {
+					dialog.ShowError(err, w)
+					return
+				}
+				if rc == nil {
+					return
+				}
+				defer rc.Close()
+				raw, err := io.ReadAll(io.LimitReader(rc, 16384+1))
+				if err != nil {
+					dialog.ShowError(err, w)
+					return
+				}
+				du, err := imageDataURLFromBytes(raw)
+				if err != nil {
+					dialog.ShowError(err, w)
+					return
+				}
+				selectedImage = du
+				updateImageLabel()
+			}, w)
+			fd.Show()
+		})
+		clearBtn := widget.NewButton("Clear Image", func() {
+			selectedImage = ""
+			updateImageLabel()
+		})
+
+		content := container.NewVBox(
+			widget.NewForm(
+				widget.NewFormItem("Display name", nameEntry),
+				widget.NewFormItem("Profile text", textEntry),
+			),
+			container.NewHBox(chooseBtn, clearBtn),
+			imageLabel,
+		)
+		dlg := dialog.NewCustomConfirm("Edit Profile", "Save", "Cancel", content, func(ok bool) {
 			if !ok {
 				return
 			}
-			payload, err := json.Marshal(profilePayload{
-				Nickname:    strings.TrimSpace(nameEntry.Text),
-				ProfileText: strings.TrimSpace(textEntry.Text),
-			})
-			if err != nil {
+			state.mu.Lock()
+			state.displayName = strings.TrimSpace(nameEntry.Text)
+			state.profileText = strings.TrimSpace(textEntry.Text)
+			state.profileImage = strings.TrimSpace(selectedImage)
+			ownDisplayName = state.displayName
+			ownProfileText = state.profileText
+			ownProfileImage = state.profileImage
+			state.mu.Unlock()
+
+			if err := state.publishOwnProfile(); err != nil {
 				dialog.ShowError(err, w)
 				return
 			}
-			if err := sendSigned(state, Packet{Type: "profile_set", Body: string(payload)}); err != nil {
-				dialog.ShowError(err, w)
-				return
-			}
-			ownDisplayName = strings.TrimSpace(nameEntry.Text)
-			ownProfileText = strings.TrimSpace(textEntry.Text)
-			if err := saveLocalProfile(home, keyPath, ownDisplayName, ownProfileText); err != nil {
+			if err := saveLocalProfile(home, keyPath, ownDisplayName, ownProfileText, ownProfileImage); err != nil {
 				appendInfo("profile save warning: "+err.Error(), infoEntry)
 			}
 			appendInfo("profile updated", infoEntry)
 		}, w)
-		form.Resize(fyne.NewSize(620, 380))
-		form.Show()
+		dlg.Resize(fyne.NewSize(680, 460))
+		dlg.Show()
 	})
 
 	presenceBtn := widget.NewButton("Presence", func() {
 		modeSel := widget.NewSelect([]string{"visible", "invisible"}, nil)
-		modeSel.SetSelected("visible")
+		state.mu.RLock()
+		curVisible := state.presenceVisible
+		curTTL := normalizePresenceTTLSec(state.presenceTTLSec)
+		state.mu.RUnlock()
+		if curVisible {
+			modeSel.SetSelected("visible")
+		} else {
+			modeSel.SetSelected("invisible")
+		}
 		ttlEntry := widget.NewEntry()
-		ttlEntry.SetText("300")
+		ttlEntry.SetText(fmt.Sprintf("%d", curTTL))
 		form := dialog.NewForm("Presence", "Update", "Cancel", []*widget.FormItem{
 			widget.NewFormItem("Mode", modeSel),
 			widget.NewFormItem("TTL sec", ttlEntry),
@@ -1635,28 +2268,141 @@ func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, 
 				return
 			}
 			mode := strings.TrimSpace(modeSel.Selected)
-			ttl := 300
+			ttl := curTTL
 			if strings.TrimSpace(ttlEntry.Text) != "" {
-				if _, err := fmt.Sscanf(strings.TrimSpace(ttlEntry.Text), "%d", &ttl); err != nil || ttl < 180 || ttl > 900 {
-					dialog.ShowError(fmt.Errorf("ttl must be a number between 180 and 900"), w)
+				if _, err := fmt.Sscanf(strings.TrimSpace(ttlEntry.Text), "%d", &ttl); err != nil {
+					dialog.ShowError(fmt.Errorf("ttl must be a number"), w)
 					return
 				}
 			}
-			payload, err := json.Marshal(map[string]any{
-				"visible": mode == "visible",
-				"ttl_sec": ttl,
-			})
+			ttl = normalizePresenceTTLSec(ttl)
+			state.setPresenceConfig(mode == "visible", ttl)
+			if err := state.sendPresenceKeepalive(); err != nil {
+				dialog.ShowError(err, w)
+				return
+			}
+			appendInfo("presence updated: "+mode+" ttl="+fmt.Sprintf("%d", ttl), infoEntry)
+		}, w)
+		form.Show()
+	})
+
+	e2eeBtn := widget.NewButton("E2EE", func() {
+		state.mu.RLock()
+		pub := strings.TrimSpace(state.e2eePubB64)
+		ids := state.friendIDs()
+		peerKeys := make(map[string][]string, len(state.peerE2EEMulti))
+		for k, v := range state.peerE2EEMulti {
+			peerKeys[k] = append([]string(nil), v...)
+		}
+		issues := make(map[string]string, len(state.e2eeIssues))
+		for k, v := range state.e2eeIssues {
+			issues[k] = v
+		}
+		state.mu.RUnlock()
+
+		lines := []string{"your e2ee pub: " + emptyDash(pub), ""}
+		if len(ids) == 0 {
+			lines = append(lines, "no friends")
+		} else {
+			for _, id := range ids {
+				n := len(peerKeys[id])
+				st := "missing"
+				if n > 0 {
+					st = fmt.Sprintf("verified(%d)", n)
+				} else if issue := strings.TrimSpace(issues[id]); issue != "" {
+					st = "invalid: " + issue
+				}
+				lines = append(lines, fmt.Sprintf("%s [%s]", state.displayPeer(id), st))
+			}
+		}
+		text := widget.NewMultiLineEntry()
+		text.SetText(strings.Join(lines, "\n"))
+		text.Disable()
+		text.SetMinRowsVisible(12)
+
+		dlg := dialog.NewCustomConfirm("E2EE Keys", "Rotate", "Close", text, func(ok bool) {
+			if !ok {
+				return
+			}
+			shared, err := state.rotateE2EEKey()
 			if err != nil {
 				dialog.ShowError(err, w)
 				return
 			}
-			if err := sendSigned(state, Packet{Type: "presence_keepalive", Body: string(payload)}); err != nil {
-				dialog.ShowError(err, w)
-				return
-			}
-			appendInfo("presence updated: "+mode, infoEntry)
+			appendInfo(fmt.Sprintf("e2ee key rotated; shared with %d friend(s)", shared), infoEntry)
+			refreshLists()
 		}, w)
-		form.Show()
+		dlg.Resize(fyne.NewSize(720, 520))
+		dlg.Show()
+	})
+
+	viewPeerBtn := widget.NewButton("View", func() {
+		mode, dm, _, _ := state.currentTarget()
+		if mode != chatModeDM || !looksLikeLoginID(dm) {
+			appendInfo("switch to a DM target first", infoEntry)
+			return
+		}
+		state.mu.RLock()
+		prof := state.peerProfiles[dm]
+		nick := strings.TrimSpace(state.nicknames[dm])
+		pres := strings.TrimSpace(state.presence[dm])
+		state.mu.RUnlock()
+		if strings.TrimSpace(prof.Nickname) == "" && nick != "" {
+			prof.Nickname = nick
+		}
+		title := "Profile: " + state.displayPeer(dm)
+		body := widget.NewMultiLineEntry()
+		body.Disable()
+		body.SetMinRowsVisible(6)
+		body.SetText(strings.TrimSpace(prof.ProfileText))
+
+		meta := widget.NewLabel(fmt.Sprintf("login_id: %s\npresence: %s", dm, emptyDash(pres)))
+		meta.Wrapping = fyne.TextWrapWord
+
+		var img fyne.CanvasObject = widget.NewLabel("image: (none)")
+		if strings.TrimSpace(prof.ProfileImage) != "" {
+			raw, _, err := parseDataURLImage(prof.ProfileImage)
+			if err == nil {
+				im := canvas.NewImageFromReader(bytes.NewReader(raw), "profile")
+				im.FillMode = canvas.ImageFillContain
+				im.SetMinSize(fyne.NewSize(128, 128))
+				img = im
+			} else {
+				img = widget.NewLabel("image: (invalid)")
+			}
+		}
+		refreshBtn := widget.NewButton("Refresh", func() {
+			requestFriendMetadata(dm)
+			appendInfo("requested profile for "+shortID(dm), infoEntry)
+		})
+		aliasBtn := widget.NewButton("Set Alias", func() {
+			aliasEntry := widget.NewEntry()
+			aliasEntry.SetPlaceHolder("alias")
+			form := dialog.NewForm("Set Alias", "Save", "Cancel", []*widget.FormItem{
+				widget.NewFormItem("Login ID", widget.NewLabel(dm)),
+				widget.NewFormItem("Alias", aliasEntry),
+			}, func(ok bool) {
+				if !ok {
+					return
+				}
+				if err := state.setAlias(aliasEntry.Text, dm); err != nil {
+					dialog.ShowError(err, w)
+					return
+				}
+				refreshLists()
+			}, w)
+			form.Show()
+		})
+
+		content := container.NewVBox(
+			meta,
+			widget.NewLabel("Nickname: "+emptyDash(strings.TrimSpace(prof.Nickname))),
+			img,
+			widget.NewLabel("Bio"),
+			body,
+			container.NewHBox(refreshBtn, aliasBtn),
+		)
+		dialog.ShowCustom(title, "Close", content, w)
 	})
 
 	pingBtn := widget.NewButton("Ping", func() {
@@ -1673,42 +2419,130 @@ func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, 
 	})
 
 	logoutBtn := widget.NewButton("Logout", func() {
+		doneOnce.Do(func() { close(done) })
 		state.closeConn()
 		w.Close()
 		loginWindow.Show()
 	})
 
-	topBar := container.NewGridWithColumns(4, profileBtn, presenceBtn, pingBtn, logoutBtn)
+	// --- UI layout (styled similar to client-web) ---
+	navMode := "friends"
 
-	leftCol := container.NewVBox(
-		topBar,
-		widget.NewLabel("Friends"),
-		container.NewGridWithColumns(2, addFriendBtn, acceptFriendBtn),
+	selfLabel := widget.NewLabelWithStyle(emptyDash(ownDisplayName), fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	selfLabel.Wrapping = fyne.TextWrapWord
+
+	profileIconBtn := widget.NewButtonWithIcon("", theme.AccountIcon(), func() { profileBtn.OnTapped() })
+	presenceIconBtn := widget.NewButtonWithIcon("", theme.VisibilityIcon(), func() { presenceBtn.OnTapped() })
+	e2eeIconBtn := widget.NewButtonWithIcon("", theme.ConfirmIcon(), func() { e2eeBtn.OnTapped() })
+	logoutIconBtn := widget.NewButtonWithIcon("", theme.LogoutIcon(), func() { logoutBtn.OnTapped() })
+
+	selfAvatar := widget.NewIcon(theme.AccountIcon())
+	selfBar := container.NewBorder(nil, nil,
+		container.NewHBox(selfAvatar, selfLabel),
+		container.NewHBox(profileIconBtn, presenceIconBtn, e2eeIconBtn, logoutIconBtn),
+		nil,
+	)
+
+	friendsHeader := container.NewBorder(nil, nil,
+		widget.NewLabelWithStyle("FRIENDS", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		container.NewHBox(addFriendBtn, acceptFriendBtn, ignoreFriendBtn),
+		nil,
+	)
+	friendsPane := container.NewBorder(
+		friendsHeader,
+		nil,
+		nil, nil,
 		container.NewVSplit(container.NewVScroll(friendsList), container.NewVScroll(pendingList)),
-		widget.NewSeparator(),
-		widget.NewLabel("Groups"),
-		container.NewGridWithColumns(2, createGroupBtn, joinGroupBtn),
-		inviteBtn,
+	)
+
+	groupsHeader := container.NewBorder(nil, nil,
+		widget.NewLabelWithStyle("GROUPS", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		container.NewHBox(createGroupBtn, joinGroupBtn),
+		nil,
+	)
+	invitesHeader := widget.NewLabelWithStyle("INVITES", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	groupsPane := container.NewVBox(
+		groupsHeader,
+		container.NewHBox(inviteBtn, leaveChannelBtn, groupProfileBtn),
 		container.NewVSplit(container.NewVScroll(groupsList), container.NewVScroll(channelsList)),
 		widget.NewSeparator(),
-		widget.NewLabel("Invites"),
-		container.NewGridWithColumns(2, acceptInviteBtn, rejectInviteBtn),
+		invitesHeader,
+		container.NewHBox(acceptInviteBtn, ignoreInviteBtn, rejectInviteBtn),
 		container.NewVScroll(invitesList),
 	)
 
-	composer := container.NewBorder(nil, nil, nil, sendBtn, messageEntry)
-	rightCol := container.NewBorder(
-		container.NewVBox(widget.NewLabel("Context"), targetLabel, widget.NewLabel("Info"), infoEntry),
-		composer,
-		nil, nil,
-		container.NewVBox(widget.NewLabel("Chat"), chatEntry),
+	var friendRailBtn *widget.Button
+	var groupRailBtn *widget.Button
+
+	contentSwitcher := container.NewMax(friendsPane)
+	switchNav := func(mode string) {
+		mode = strings.TrimSpace(mode)
+		if mode == navMode {
+			return
+		}
+		navMode = mode
+		if navMode == "groups" {
+			groupRailBtn.Importance = widget.HighImportance
+			friendRailBtn.Importance = widget.MediumImportance
+		} else {
+			friendRailBtn.Importance = widget.HighImportance
+			groupRailBtn.Importance = widget.MediumImportance
+		}
+		friendRailBtn.Refresh()
+		groupRailBtn.Refresh()
+		contentSwitcher.Objects = nil
+		if navMode == "groups" {
+			contentSwitcher.Add(groupsPane)
+		} else {
+			contentSwitcher.Add(friendsPane)
+		}
+		contentSwitcher.Refresh()
+	}
+
+	friendRailBtn = widget.NewButtonWithIcon("", theme.AccountIcon(), func() { switchNav("friends") })
+	groupRailBtn = widget.NewButtonWithIcon("", theme.FolderIcon(), func() { switchNav("groups") })
+	friendRailBtn.Importance = widget.HighImportance
+	groupRailBtn.Importance = widget.MediumImportance
+
+	navRail := container.NewVBox(friendRailBtn, groupRailBtn, layout.NewSpacer(), selfBar)
+	leftMain := container.NewBorder(nil, nil, navRail, nil, contentSwitcher)
+	leftCard := widget.NewCard("", "", leftMain)
+
+	// Right side: collapsible info + chat.
+	infoCollapsed := false
+	infoTitle := widget.NewLabelWithStyle("INFO", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	infoToggle := widget.NewButtonWithIcon("", theme.MenuDropDownIcon(), func() {
+		infoCollapsed = !infoCollapsed
+		if infoCollapsed {
+			infoEntry.Hide()
+		} else {
+			infoEntry.Show()
+		}
+	})
+	infoHeader := container.NewBorder(nil, nil, infoTitle, infoToggle, nil)
+	infoCard := widget.NewCard("", "", container.NewVBox(infoHeader, infoEntry))
+
+	ctxTitle := widget.NewLabelWithStyle("DIRECT MESSAGE", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	ctxTitle.Wrapping = fyne.TextWrapWord
+	ctxHeader := container.NewBorder(nil, nil,
+		container.NewVBox(targetLabel, ctxTitle),
+		container.NewHBox(viewPeerBtn, pingBtn),
+		nil,
 	)
 
-	root := container.NewHSplit(leftCol, rightCol)
-	root.Offset = 0.31
+	composer := container.NewBorder(nil, nil, nil, sendBtn, messageEntry)
+	chatBody := container.NewBorder(ctxHeader, composer, nil, nil, container.NewVScroll(chatEntry))
+	chatCard := widget.NewCard("", "", chatBody)
+
+	rightSplit := container.NewVSplit(infoCard, chatCard)
+	rightSplit.Offset = 0.24
+
+	root := container.NewHSplit(leftCard, rightSplit)
+	root.Offset = 0.33
 
 	w.SetContent(root)
 	w.SetCloseIntercept(func() {
+		doneOnce.Do(func() { close(done) })
 		state.closeConn()
 		w.Close()
 		loginWindow.Show()
@@ -1720,87 +2554,222 @@ func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, 
 		appendInfo("login_id: "+loginID, infoEntry)
 	}
 	appendInfo("display name: "+ownDisplayName, infoEntry)
-	_ = sendSigned(state, Packet{Type: "profile_set", Body: fmt.Sprintf("{\"nickname\":%q,\"profile_text\":%q}", ownDisplayName, ownProfileText)})
+	if err := state.publishOwnProfile(); err != nil {
+		appendInfo("profile publish failed: "+err.Error(), infoEntry)
+	}
+	if err := state.sendPresenceKeepalive(); err != nil {
+		appendInfo("presence keepalive failed: "+err.Error(), infoEntry)
+	}
 	refreshLists()
 
+	state.mu.RLock()
+	startCtx := state.lastContext
+	state.mu.RUnlock()
+	if strings.TrimSpace(startCtx.Mode) == "group" && strings.TrimSpace(startCtx.Group) != "" {
+		ch := strings.TrimSpace(startCtx.Channel)
+		if ch == "" {
+			ch = "default"
+		}
+		state.rememberGroup(startCtx.Group, ch)
+		selectedGroup = normalizeGroupName(startCtx.Group)
+		refreshLists()
+		setGroupContext(startCtx.Group, ch)
+	} else if strings.TrimSpace(startCtx.Mode) == "dm" && looksLikeLoginID(strings.TrimSpace(startCtx.Target)) {
+		setDMContext(startCtx.Target)
+	}
+
 	go func() {
-		for ev := range events {
-			if ev.err != nil {
-				appendInfo("connection closed: "+ev.err.Error(), infoEntry)
-				state.closeConn()
-				fyne.Do(func() {
-					w.Close()
-					loginWindow.Show()
-				})
+		for {
+			state.mu.RLock()
+			ttl := normalizePresenceTTLSec(state.presenceTTLSec)
+			state.mu.RUnlock()
+			interval := time.Duration(ttl/2) * time.Second
+			if interval < 60*time.Second {
+				interval = 60 * time.Second
+			}
+			select {
+			case <-done:
 				return
+			case <-time.After(interval):
+				if err := state.sendPresenceKeepalive(); err != nil {
+					appendInfo("presence keepalive failed: "+err.Error(), infoEntry)
+				}
 			}
-			p := ev.pkt
-			switch p.Type {
-			case "deliver":
-				if looksLikeLoginID(p.From) && p.From != ownLoginID {
-					state.addFriend(p.From)
+		}
+	}()
+
+	go func() {
+		reconnectDelay := 1 * time.Second
+		for {
+			select {
+			case <-done:
+				return
+			case ev, ok := <-events:
+				if !ok {
+					ev = netMsg{err: io.EOF}
+				}
+				if ev.err != nil {
+					if errors.Is(ev.err, io.EOF) {
+						appendInfo("connection closed; reconnecting...", infoEntry)
+					} else {
+						appendInfo("network error: "+ev.err.Error()+"; reconnecting...", infoEntry)
+					}
+					for {
+						select {
+						case <-done:
+							return
+						case <-time.After(reconnectDelay):
+						}
+						state.mu.RLock()
+						addr := strings.TrimSpace(state.serverAddr)
+						priv := state.priv
+						state.mu.RUnlock()
+						conn, sender, newEvents, loginID, err := runAuth(addr, priv)
+						if err != nil {
+							appendInfo("reconnect failed: "+err.Error(), infoEntry)
+							reconnectDelay *= 2
+							if reconnectDelay > 30*time.Second {
+								reconnectDelay = 30 * time.Second
+							}
+							continue
+						}
+						state.setConn(conn, sender, priv, loginID)
+						events = newEvents
+						reconnectDelay = 1 * time.Second
+						appendInfo("reconnected", infoEntry)
+						if err := state.publishOwnProfile(); err != nil {
+							appendInfo("profile publish failed: "+err.Error(), infoEntry)
+						}
+						if err := state.sendPresenceKeepalive(); err != nil {
+							appendInfo("presence keepalive failed: "+err.Error(), infoEntry)
+						}
+						break
+					}
+					continue
+				}
+				p := ev.pkt
+				switch p.Type {
+				case "deliver":
+					state.ensureContact(p.From)
+					state.ensureContact(p.To)
+					if looksLikeLoginID(p.From) && p.From != ownLoginID {
+						state.addFriend(p.From)
+						requestFriendMetadata(p.From)
+					}
+					line := p.Body
+					if strings.TrimSpace(p.From) != strings.TrimSpace(ownLoginID) && strings.TrimSpace(p.Group) == "" && strings.TrimSpace(p.Channel) == "" {
+						state.mu.RLock()
+						e2eePriv := state.e2eePriv
+						state.mu.RUnlock()
+						decodedDM, err := netsec.DecryptDM(e2eePriv, p.Body)
+						if err != nil {
+							appendInfo("dm decrypt failed from "+state.displayPeer(p.From)+": "+err.Error(), infoEntry)
+							break
+						}
+						line = decodedDM
+					}
+					actor := p.From
+					if strings.TrimSpace(actor) == strings.TrimSpace(ownLoginID) {
+						actor = p.To
+					}
+					appendChat(fmt.Sprintf("dm %s: %s", state.friendLabel(actor), line), chatEntry)
+				case "channel_deliver":
+					state.ensureContact(p.From)
+					state.rememberGroup(p.Group, p.Channel)
+					appendChat(fmt.Sprintf("%s/%s %s: %s", p.Group, p.Channel, state.friendLabel(p.From), p.Body), chatEntry)
+				case "friend_request":
+					state.addPendingFriend(p.From)
+					state.ensureContact(p.From)
+					if _, present, err := state.consumeFriendKey(p.From, p.Body); present && err != nil {
+						appendInfo("friend key rejected from "+state.displayPeer(p.From)+": "+err.Error(), infoEntry)
+					}
 					requestFriendMetadata(p.From)
+					appendInfo("friend request from "+shortID(p.From), infoEntry)
+				case "friend_update":
+					state.ensureContact(p.From)
+					state.ensureContact(p.To)
+					if _, present, err := state.consumeFriendKey(p.From, p.Body); present && err != nil {
+						appendInfo("friend key rejected from "+state.displayPeer(p.From)+": "+err.Error(), infoEntry)
+					}
+					other := strings.TrimSpace(p.From)
+					if strings.TrimSpace(other) == strings.TrimSpace(ownLoginID) {
+						other = p.To
+					}
+					if looksLikeLoginID(other) {
+						state.addFriend(other)
+						state.ensureContact(other)
+						requestFriendMetadata(other)
+					}
+					appendInfo("friend update from="+shortID(p.From)+" to="+shortID(p.To), infoEntry)
+				case "group_invite":
+					state.addInvite(p.From, p.Group, p.Channel)
+					state.ensureContact(p.From)
+					appendInfo("group invite from "+shortID(p.From)+" to "+p.Group, infoEntry)
+				case "group_invite_rejected":
+					appendInfo("group invite rejected by "+shortID(p.From)+" for "+p.Group, infoEntry)
+				case "ping":
+					state.ensureContact(p.From)
+					replyBody, _ := json.Marshal(map[string]any{"ping_id": p.ID})
+					if err := sendSigned(state, Packet{Type: "pong", To: p.From, Body: string(replyBody)}); err != nil {
+						appendInfo("pong send failed: "+err.Error(), infoEntry)
+					}
+				case "pong":
+					appendInfo("pong from "+state.displayPeer(p.From), infoEntry)
+				case "channel_update", "channel_joined":
+					state.rememberGroup(p.Group, p.Channel)
+					appendInfo(p.Type+": "+p.Group+"/"+p.Channel+" "+strings.TrimSpace(p.Body), infoEntry)
+				case "profile_data":
+					decoded, err := decodeTextBodyForClient(p)
+					if err != nil {
+						appendInfo("profile decode failed: "+err.Error(), infoEntry)
+						break
+					}
+					var prof profilePayload
+					if err := json.Unmarshal([]byte(decoded), &prof); err != nil {
+						appendInfo("profile parse failed", infoEntry)
+						break
+					}
+					if strings.TrimSpace(p.From) == strings.TrimSpace(ownLoginID) {
+						state.setOwnProfileFromServer(prof)
+						appendInfo("profile synced from server", infoEntry)
+						break
+					}
+					if nick := strings.TrimSpace(prof.Nickname); nick != "" {
+						state.setNickname(p.From, nick)
+					}
+					state.upsertPeerProfile(p.From, prof)
+					appendInfo("profile from "+shortID(p.From), infoEntry)
+				case "group_profile_data":
+					decoded, err := decodeTextBodyForClient(p)
+					if err != nil {
+						appendInfo("group profile decode failed: "+err.Error(), infoEntry)
+						break
+					}
+					var gp groupProfilePayload
+					if err := json.Unmarshal([]byte(decoded), &gp); err != nil {
+						appendInfo("group profile parse failed", infoEntry)
+						break
+					}
+					if strings.TrimSpace(gp.Group) == "" {
+						gp.Group = normalizeGroupName(p.Group)
+					}
+					state.upsertGroupProfile(gp)
+					appendInfo("group profile synced: "+normalizeGroupName(gp.Group), infoEntry)
+				case "presence_data":
+					var pd presenceDataPayload
+					if err := json.Unmarshal([]byte(strings.TrimSpace(p.Body)), &pd); err == nil {
+						state.setPresence(p.From, pd.State, pd.TTLSec)
+					} else {
+						state.setPresence(p.From, p.Body, 0)
+					}
+				case "error":
+					appendInfo("server error: "+p.Body, infoEntry)
+				default:
+					raw, _ := json.Marshal(p)
+					appendInfo("event: "+string(raw), infoEntry)
 				}
-				actor := p.From
-				if strings.TrimSpace(actor) == strings.TrimSpace(ownLoginID) {
-					actor = p.To
-				}
-				appendChat(fmt.Sprintf("dm %s: %s", state.friendLabel(actor), p.Body), chatEntry)
-			case "channel_deliver":
-				state.rememberGroup(p.Group, p.Channel)
-				appendChat(fmt.Sprintf("%s/%s %s: %s", p.Group, p.Channel, state.friendLabel(p.From), p.Body), chatEntry)
-			case "friend_request":
-				state.addPendingFriend(p.From)
-				requestFriendMetadata(p.From)
-				appendInfo("friend request from "+shortID(p.From), infoEntry)
-			case "friend_update":
-				other := strings.TrimSpace(p.From)
-				if strings.TrimSpace(other) == strings.TrimSpace(ownLoginID) {
-					other = p.To
-				}
-				if looksLikeLoginID(other) {
-					state.addFriend(other)
-					requestFriendMetadata(other)
-				}
-				appendInfo("friend update from="+shortID(p.From)+" to="+shortID(p.To), infoEntry)
-			case "group_invite":
-				state.addInvite(p.From, p.Group, p.Channel)
-				appendInfo("group invite from "+shortID(p.From)+" to "+p.Group, infoEntry)
-			case "group_invite_rejected":
-				appendInfo("group invite rejected by "+shortID(p.From)+" for "+p.Group, infoEntry)
-			case "channel_update", "channel_joined":
-				state.rememberGroup(p.Group, p.Channel)
-				appendInfo(p.Type+": "+p.Group+"/"+p.Channel+" "+strings.TrimSpace(p.Body), infoEntry)
-			case "profile_data":
-				decoded, err := decodeTextBodyForClient(p)
-				if err != nil {
-					appendInfo("profile decode failed: "+err.Error(), infoEntry)
-					break
-				}
-				var prof profilePayload
-				if err := json.Unmarshal([]byte(decoded), &prof); err != nil {
-					appendInfo("profile parse failed", infoEntry)
-					break
-				}
-				nick := strings.TrimSpace(prof.Nickname)
-				if nick != "" {
-					state.setNickname(p.From, nick)
-				}
-				appendInfo("profile from "+shortID(p.From)+" nick="+nick, infoEntry)
-			case "presence_data":
-				var pd presenceDataPayload
-				if err := json.Unmarshal([]byte(strings.TrimSpace(p.Body)), &pd); err == nil {
-					state.setPresence(p.From, pd.State, pd.TTLSec)
-				} else {
-					state.setPresence(p.From, p.Body, 0)
-				}
-			case "error":
-				appendInfo("server error: "+p.Body, infoEntry)
-			default:
-				raw, _ := json.Marshal(p)
-				appendInfo("event: "+string(raw), infoEntry)
+				refreshLists()
 			}
-			refreshLists()
 		}
 	}()
 
