@@ -332,6 +332,26 @@ func (s *appState) displayPeer(id string) string {
 	return displayPeer(id, s.loginID, s.displayName, s.nicknames, s.contacts)
 }
 
+func (s *appState) resolveRecipient(token string) (string, bool) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return "", false
+	}
+	s.mu.RLock()
+	for id, nick := range s.nicknames {
+		if strings.EqualFold(strings.TrimSpace(nick), token) && looksLikeLoginID(id) {
+			s.mu.RUnlock()
+			return id, true
+		}
+	}
+	if id, ok := s.contacts[token]; ok && looksLikeLoginID(id) {
+		s.mu.RUnlock()
+		return id, true
+	}
+	s.mu.RUnlock()
+	return parseLoginIDToken(token)
+}
+
 func cloneStringMap(in map[string]string) map[string]string {
 	out := make(map[string]string, len(in))
 	for k, v := range in {
@@ -712,6 +732,34 @@ func looksLikeLoginID(v string) bool {
 	return true
 }
 
+func loginIDForUserID(userID string) (string, bool) {
+	raw, err := base58Decode(userID)
+	if err != nil || len(raw) != sha256.Size {
+		return "", false
+	}
+	return hex.EncodeToString(raw), true
+}
+
+func parseLoginIDToken(token string) (string, bool) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return "", false
+	}
+	lower := strings.ToLower(token)
+	if looksLikeLoginID(lower) {
+		return lower, true
+	}
+	return loginIDForUserID(token)
+}
+
+func parseUserIDToken(token string) (string, bool) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return "", false
+	}
+	return loginIDForUserID(token)
+}
+
 func shortID(s string) string {
 	s = strings.TrimSpace(s)
 	if len(s) <= 12 {
@@ -726,6 +774,17 @@ func emptyDash(v string) string {
 		return "-"
 	}
 	return v
+}
+
+func truncateText(v string, max int) string {
+	v = strings.TrimSpace(v)
+	if max <= 0 || len(v) <= max {
+		return v
+	}
+	if max <= 3 {
+		return v[:max]
+	}
+	return v[:max-3] + "..."
 }
 
 func normalizeGroupName(v string) string {
@@ -1757,6 +1816,9 @@ func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, 
 	messageEntry := widget.NewEntry()
 	messageEntry.SetPlaceHolder("Type message")
 
+	var pendingSection *fyne.Container
+	var invitesSection *fyne.Container
+
 	refreshLists := func() {
 		friendIDs = state.friendIDs()
 		friendLabels = make([]string, 0, len(friendIDs))
@@ -1778,6 +1840,20 @@ func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, 
 		}
 		if selectedGroup == "" && len(groupsData) > 0 {
 			selectedGroup = groupsData[0]
+		}
+		if pendingSection != nil {
+			if len(pendingIDs) == 0 {
+				pendingSection.Hide()
+			} else {
+				pendingSection.Show()
+			}
+		}
+		if invitesSection != nil {
+			if len(invitesData) == 0 {
+				invitesSection.Hide()
+			} else {
+				invitesSection.Show()
+			}
 		}
 		refreshChannels()
 		friendsList.Refresh()
@@ -1831,23 +1907,23 @@ func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, 
 
 	addFriendBtn := widget.NewButton("Add", func() {
 		entry := widget.NewEntry()
-		entry.SetPlaceHolder("friend login_id")
+		entry.SetPlaceHolder("friend userID")
 		form := dialog.NewForm("Friend Add", "Send", "Cancel", []*widget.FormItem{
-			widget.NewFormItem("Login ID", entry),
+			widget.NewFormItem("User ID", entry),
 		}, func(ok bool) {
 			if !ok {
 				return
 			}
-			target := strings.TrimSpace(entry.Text)
-			if !looksLikeLoginID(target) {
-				dialog.ShowError(fmt.Errorf("invalid login_id"), w)
+			target, ok := parseUserIDToken(entry.Text)
+			if !ok {
+				dialog.ShowError(fmt.Errorf("invalid user ID"), w)
 				return
 			}
 			if err := sendSigned(state, Packet{Type: "friend_add", To: target, Body: state.friendKeyBody()}); err != nil {
 				dialog.ShowError(err, w)
 				return
 			}
-			appendInfo("friend request sent to "+shortID(target), infoEntry)
+			appendInfo("friend request sent to "+state.displayPeer(target), infoEntry)
 		}, w)
 		form.Show()
 	})
@@ -1968,7 +2044,7 @@ func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, 
 			return
 		}
 		target := widget.NewEntry()
-		target.SetPlaceHolder("friend login_id")
+		target.SetPlaceHolder("friend login_id, alias, nickname, or userID")
 		form := dialog.NewForm("Invite To Group", "Invite", "Cancel", []*widget.FormItem{
 			widget.NewFormItem("Target", target),
 			widget.NewFormItem("Group", widget.NewLabel(group)),
@@ -1976,16 +2052,16 @@ func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, 
 			if !ok {
 				return
 			}
-			id := strings.TrimSpace(target.Text)
-			if !looksLikeLoginID(id) {
-				dialog.ShowError(fmt.Errorf("invalid login_id"), w)
+			id, ok := state.resolveRecipient(target.Text)
+			if !ok {
+				dialog.ShowError(fmt.Errorf("unknown recipient"), w)
 				return
 			}
 			if err := sendSigned(state, Packet{Type: "group_invite", To: id, Group: group}); err != nil {
 				dialog.ShowError(err, w)
 				return
 			}
-			appendInfo("invited "+shortID(id)+" to "+group, infoEntry)
+			appendInfo("invited "+state.displayPeer(id)+" to "+group, infoEntry)
 		}, w)
 		form.Show()
 	})
@@ -2429,32 +2505,46 @@ func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, 
 	// --- UI layout (styled similar to client-web) ---
 	navMode := "friends"
 
-	selfLabel := widget.NewLabelWithStyle(emptyDash(ownDisplayName), fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	selfDisplay := strings.TrimSpace(ownDisplayName)
+	if selfDisplay == "" {
+		selfDisplay = "user-" + shortID(ownLoginID)
+	}
+	selfLabel := widget.NewLabelWithStyle(truncateText(selfDisplay, 18), fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 	selfLabel.Wrapping = fyne.TextWrapOff
 	selfLabel.Truncation = fyne.TextTruncateEllipsis
 
-	selfAvatar := widget.NewIcon(theme.AccountIcon())
-	selfIdentity := container.NewHBox(selfAvatar, selfLabel)
-	selfControls := widget.NewToolbar(
-		widget.NewToolbarAction(theme.AccountIcon(), func() { profileBtn.OnTapped() }),
-		widget.NewToolbarAction(theme.VisibilityIcon(), func() { presenceBtn.OnTapped() }),
-		widget.NewToolbarAction(theme.ConfirmIcon(), func() { e2eeBtn.OnTapped() }),
-		widget.NewToolbarSeparator(),
-		widget.NewToolbarAction(theme.LogoutIcon(), func() { logoutBtn.OnTapped() }),
+	wrapControlBtn := func(icon fyne.Resource, tapped func()) fyne.CanvasObject {
+		btn := widget.NewButtonWithIcon("", icon, tapped)
+		btn.Importance = widget.MediumImportance
+		return container.NewGridWrap(fyne.NewSize(36, 36), btn)
+	}
+
+	selfIdentity := container.NewHBox(widget.NewIcon(theme.AccountIcon()), selfLabel)
+	selfControls := container.NewHBox(
+		wrapControlBtn(theme.AccountIcon(), func() { profileBtn.OnTapped() }),
+		wrapControlBtn(theme.VisibilityIcon(), func() { presenceBtn.OnTapped() }),
+		wrapControlBtn(theme.ConfirmIcon(), func() { e2eeBtn.OnTapped() }),
+		wrapControlBtn(theme.LogoutIcon(), func() { logoutBtn.OnTapped() }),
 	)
-	selfBar := container.NewBorder(nil, nil, selfIdentity, selfControls, layout.NewSpacer())
+	selfBar := container.NewBorder(nil, nil, selfIdentity, selfControls, nil)
 
 	friendsHeader := container.NewBorder(nil, nil, nil,
 		container.NewHBox(addFriendBtn, acceptFriendBtn, ignoreFriendBtn),
 		widget.NewLabelWithStyle("FRIENDS", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 	)
-	friendsSplit := container.NewVSplit(container.NewVScroll(friendsList), container.NewVScroll(pendingList))
-	friendsSplit.Offset = 0.82
+
+	pendingHeader := widget.NewLabelWithStyle("PENDING", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	pendingSection = container.NewVBox(
+		widget.NewSeparator(),
+		pendingHeader,
+		container.NewVScroll(pendingList),
+	)
+	pendingSection.Hide()
 	friendsPane := container.NewBorder(
 		friendsHeader,
-		nil,
+		pendingSection,
 		nil, nil,
-		friendsSplit,
+		container.NewVScroll(friendsList),
 	)
 
 	groupsHeader := container.NewBorder(nil, nil, nil,
@@ -2462,16 +2552,21 @@ func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, 
 		widget.NewLabelWithStyle("GROUPS", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 	)
 	invitesHeader := widget.NewLabelWithStyle("INVITES", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+
 	groupsSplit := container.NewVSplit(container.NewVScroll(groupsList), container.NewVScroll(channelsList))
-	groupsSplit.Offset = 0.52
-	groupsPane := container.NewVBox(
-		groupsHeader,
-		container.NewHBox(inviteBtn, leaveChannelBtn, groupProfileBtn),
-		groupsSplit,
+	groupsSplit.Offset = 0.68
+	invitesSection = container.NewVBox(
 		widget.NewSeparator(),
 		invitesHeader,
 		container.NewHBox(acceptInviteBtn, ignoreInviteBtn, rejectInviteBtn),
 		container.NewVScroll(invitesList),
+	)
+	invitesSection.Hide()
+	groupsPane := container.NewBorder(
+		container.NewVBox(groupsHeader, container.NewHBox(inviteBtn, leaveChannelBtn, groupProfileBtn)),
+		invitesSection,
+		nil, nil,
+		groupsSplit,
 	)
 
 	var friendRailBtn *widget.Button
@@ -2512,7 +2607,10 @@ func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, 
 	}
 	navRail := container.NewVBox(wrapRail(friendRailBtn), wrapRail(groupRailBtn), layout.NewSpacer())
 	leftMain := container.NewBorder(nil, selfBar, navRail, nil, contentSwitcher)
-	leftCard := widget.NewCard("", "", leftMain)
+	leftBg := canvas.NewRectangle(witheraPanel)
+	leftBg.StrokeColor = witheraLine
+	leftBg.StrokeWidth = 1
+	leftPane := container.NewStack(leftBg, container.NewPadded(leftMain))
 
 	// Right side: collapsible info + chat.
 	infoCollapsed := false
@@ -2536,7 +2634,11 @@ func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, 
 		}
 	})
 	infoHeader := container.NewBorder(nil, nil, nil, infoToggle, infoTitle)
-	infoCard := widget.NewCard("", "", container.NewVBox(infoHeader, infoEntry))
+	infoInner := container.NewVBox(infoHeader, infoEntry)
+	infoBg := canvas.NewRectangle(witheraPanel)
+	infoBg.StrokeColor = witheraLine
+	infoBg.StrokeWidth = 1
+	infoPane := container.NewStack(infoBg, container.NewPadded(infoInner))
 
 	ctxTitle := widget.NewLabelWithStyle("DIRECT MESSAGE", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 	ctxTitle.Wrapping = fyne.TextWrapWord
@@ -2547,15 +2649,19 @@ func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, 
 
 	composer := container.NewBorder(nil, nil, nil, sendBtn, messageEntry)
 	chatBody := container.NewBorder(ctxHeader, composer, nil, nil, container.NewVScroll(chatEntry))
-	chatCard := widget.NewCard("", "", chatBody)
+	chatBg := canvas.NewRectangle(witheraPanel)
+	chatBg.StrokeColor = witheraLine
+	chatBg.StrokeWidth = 1
+	chatPane := container.NewStack(chatBg, container.NewPadded(chatBody))
 
-	rightSplit = container.NewVSplit(infoCard, chatCard)
+	rightSplit = container.NewVSplit(infoPane, chatPane)
 	rightSplit.Offset = 0.24
 
-	root := container.NewHSplit(leftCard, rightSplit)
-	root.Offset = 0.33
+	root := container.NewHSplit(leftPane, rightSplit)
+	root.Offset = 0.31
 
-	w.SetContent(root)
+	viewport := container.NewPadded(root)
+	w.SetContent(container.NewStack(canvas.NewRectangle(witheraBG), viewport))
 	w.CenterOnScreen()
 	w.SetCloseIntercept(func() {
 		doneOnce.Do(func() { close(done) })

@@ -2609,9 +2609,9 @@ func (c *webClient) handleFriendAdd(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
 		return
 	}
-	target, ok := c.resolveRecipient(req.To)
+	target, ok := parseUserIDToken(req.To)
 	if !ok {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unknown recipient"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid user id"})
 		return
 	}
 	if err := c.sendSigned(Packet{Type: "friend_add", To: target, Body: c.friendKeyBody()}); err != nil {
@@ -3335,6 +3335,14 @@ func parseLoginIDToken(token string) (string, bool) {
 	}
 	if looksLikeLoginID(token) {
 		return strings.ToLower(token), true
+	}
+	return loginIDForUserID(token)
+}
+
+func parseUserIDToken(token string) (string, bool) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return "", false
 	}
 	return loginIDForUserID(token)
 }
