@@ -2437,34 +2437,34 @@ func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, 
 	logoutIconBtn := widget.NewButtonWithIcon("", theme.LogoutIcon(), func() { logoutBtn.OnTapped() })
 
 	selfAvatar := widget.NewIcon(theme.AccountIcon())
-	selfBar := container.NewBorder(nil, nil,
-		container.NewHBox(selfAvatar, selfLabel),
-		container.NewHBox(profileIconBtn, presenceIconBtn, e2eeIconBtn, logoutIconBtn),
-		nil,
-	)
+	selfIdentity := container.NewHBox(selfAvatar, selfLabel)
+	selfControls := container.NewHBox(profileIconBtn, presenceIconBtn, e2eeIconBtn, logoutIconBtn)
+	selfBar := container.NewBorder(nil, nil, nil, selfControls, selfIdentity)
 
-	friendsHeader := container.NewBorder(nil, nil,
-		widget.NewLabelWithStyle("FRIENDS", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+	friendsHeader := container.NewBorder(nil, nil, nil,
 		container.NewHBox(addFriendBtn, acceptFriendBtn, ignoreFriendBtn),
-		nil,
+		widget.NewLabelWithStyle("FRIENDS", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 	)
+	friendsSplit := container.NewVSplit(container.NewVScroll(friendsList), container.NewVScroll(pendingList))
+	friendsSplit.Offset = 0.82
 	friendsPane := container.NewBorder(
 		friendsHeader,
 		nil,
 		nil, nil,
-		container.NewVSplit(container.NewVScroll(friendsList), container.NewVScroll(pendingList)),
+		friendsSplit,
 	)
 
-	groupsHeader := container.NewBorder(nil, nil,
-		widget.NewLabelWithStyle("GROUPS", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+	groupsHeader := container.NewBorder(nil, nil, nil,
 		container.NewHBox(createGroupBtn, joinGroupBtn),
-		nil,
+		widget.NewLabelWithStyle("GROUPS", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 	)
 	invitesHeader := widget.NewLabelWithStyle("INVITES", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	groupsSplit := container.NewVSplit(container.NewVScroll(groupsList), container.NewVScroll(channelsList))
+	groupsSplit.Offset = 0.52
 	groupsPane := container.NewVBox(
 		groupsHeader,
 		container.NewHBox(inviteBtn, leaveChannelBtn, groupProfileBtn),
-		container.NewVSplit(container.NewVScroll(groupsList), container.NewVScroll(channelsList)),
+		groupsSplit,
 		widget.NewSeparator(),
 		invitesHeader,
 		container.NewHBox(acceptInviteBtn, ignoreInviteBtn, rejectInviteBtn),
@@ -2504,37 +2504,49 @@ func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, 
 	friendRailBtn.Importance = widget.HighImportance
 	groupRailBtn.Importance = widget.MediumImportance
 
-	navRail := container.NewVBox(friendRailBtn, groupRailBtn, layout.NewSpacer(), selfBar)
-	leftMain := container.NewBorder(nil, nil, navRail, nil, contentSwitcher)
+	wrapRail := func(btn *widget.Button) fyne.CanvasObject {
+		return container.NewGridWrap(fyne.NewSize(52, 52), btn)
+	}
+	navRail := container.NewVBox(wrapRail(friendRailBtn), wrapRail(groupRailBtn), layout.NewSpacer())
+	leftMain := container.NewBorder(nil, selfBar, navRail, nil, contentSwitcher)
 	leftCard := widget.NewCard("", "", leftMain)
 
 	// Right side: collapsible info + chat.
 	infoCollapsed := false
+	var rightSplit *container.Split
 	infoTitle := widget.NewLabelWithStyle("INFO", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 	infoToggle := widget.NewButtonWithIcon("", theme.MenuDropDownIcon(), func() {
 		infoCollapsed = !infoCollapsed
 		if infoCollapsed {
 			infoEntry.Hide()
+			if rightSplit != nil {
+				rightSplit.Offset = 0.08
+			}
 		} else {
 			infoEntry.Show()
+			if rightSplit != nil {
+				rightSplit.Offset = 0.24
+			}
+		}
+		if rightSplit != nil {
+			rightSplit.Refresh()
 		}
 	})
-	infoHeader := container.NewBorder(nil, nil, infoTitle, infoToggle, nil)
+	infoHeader := container.NewBorder(nil, nil, nil, infoToggle, infoTitle)
 	infoCard := widget.NewCard("", "", container.NewVBox(infoHeader, infoEntry))
 
 	ctxTitle := widget.NewLabelWithStyle("DIRECT MESSAGE", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 	ctxTitle.Wrapping = fyne.TextWrapWord
-	ctxHeader := container.NewBorder(nil, nil,
-		container.NewVBox(targetLabel, ctxTitle),
+	ctxHeader := container.NewBorder(nil, nil, nil,
 		container.NewHBox(viewPeerBtn, pingBtn),
-		nil,
+		container.NewVBox(targetLabel, ctxTitle),
 	)
 
 	composer := container.NewBorder(nil, nil, nil, sendBtn, messageEntry)
 	chatBody := container.NewBorder(ctxHeader, composer, nil, nil, container.NewVScroll(chatEntry))
 	chatCard := widget.NewCard("", "", chatBody)
 
-	rightSplit := container.NewVSplit(infoCard, chatCard)
+	rightSplit = container.NewVSplit(infoCard, chatCard)
 	rightSplit.Offset = 0.24
 
 	root := container.NewHSplit(leftCard, rightSplit)
