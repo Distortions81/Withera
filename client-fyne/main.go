@@ -344,7 +344,7 @@ func (s *appState) setAlias(alias string, loginID string) error {
 	alias = strings.TrimSpace(alias)
 	loginID = strings.TrimSpace(loginID)
 	if alias == "" || !looksLikeLoginID(loginID) {
-		return fmt.Errorf("alias and login_id required")
+		return fmt.Errorf("alias and user_id required")
 	}
 	s.mu.Lock()
 	if s.contacts == nil {
@@ -700,6 +700,18 @@ func loginIDForPubKey(pub ed25519.PublicKey) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func userIDForLoginID(loginID string) string {
+	loginID = strings.TrimSpace(strings.ToLower(loginID))
+	if !looksLikeLoginID(loginID) {
+		return ""
+	}
+	raw, err := hex.DecodeString(loginID)
+	if err != nil || len(raw) != sha256.Size {
+		return ""
+	}
+	return groupedToken(base58Encode(raw), 5)
+}
+
 func looksLikeLoginID(v string) bool {
 	if len(v) != 64 {
 		return false
@@ -733,15 +745,14 @@ func parseLoginIDToken(token string) (string, bool) {
 }
 
 func parseUserIDToken(token string) (string, bool) {
-	token = strings.TrimSpace(token)
-	if token == "" {
-		return "", false
-	}
-	return loginIDForUserID(token)
+	return parseLoginIDToken(token)
 }
 
 func shortID(s string) string {
 	s = strings.TrimSpace(s)
+	if userID := userIDForLoginID(s); userID != "" {
+		s = userID
+	}
 	if len(s) <= 12 {
 		return s
 	}
@@ -1343,7 +1354,11 @@ func showLoginWindow(fy fyne.App, home string, defaultKeyPath string, defaultSer
 			if c.Path == pick {
 				selectedPath = c.Path
 				identitySelect.SetSelected(labelForPath[c.Path])
-				identityInfo.SetText(fmt.Sprintf("Login ID: %s\nPath: %s", c.LoginID, c.Path))
+				displayID := userIDForLoginID(c.LoginID)
+				if displayID == "" {
+					displayID = c.LoginID
+				}
+				identityInfo.SetText(fmt.Sprintf("User ID: %s\nPath: %s", displayID, c.Path))
 				break
 			}
 		}
@@ -1358,7 +1373,11 @@ func showLoginWindow(fy fyne.App, home string, defaultKeyPath string, defaultSer
 			}
 			if display == choice {
 				selectedPath = c.Path
-				identityInfo.SetText(fmt.Sprintf("Login ID: %s\nPath: %s", c.LoginID, c.Path))
+				displayID := userIDForLoginID(c.LoginID)
+				if displayID == "" {
+					displayID = c.LoginID
+				}
+				identityInfo.SetText(fmt.Sprintf("User ID: %s\nPath: %s", displayID, c.Path))
 				return
 			}
 		}
@@ -1800,46 +1819,48 @@ func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, 
 	var invitesSection *fyne.Container
 
 	refreshLists := func() {
-		friendIDs = state.friendIDs()
-		friendLabels = make([]string, 0, len(friendIDs))
-		for _, id := range friendIDs {
-			friendLabels = append(friendLabels, state.friendLabel(id))
-		}
-		pendingIDs = state.pendingFriendIDs()
-		pendingLabels = make([]string, 0, len(pendingIDs))
-		for _, id := range pendingIDs {
-			pendingLabels = append(pendingLabels, state.friendLabel(id))
-		}
-		groupsData = state.groupNames()
-		invitesData = state.invites()
-		if selectedPending >= len(pendingIDs) {
-			selectedPending = -1
-		}
-		if selectedInvite >= len(invitesData) {
-			selectedInvite = -1
-		}
-		if selectedGroup == "" && len(groupsData) > 0 {
-			selectedGroup = groupsData[0]
-		}
-		if pendingSection != nil {
-			if len(pendingIDs) == 0 {
-				pendingSection.Hide()
-			} else {
-				pendingSection.Show()
+		fyne.Do(func() {
+			friendIDs = state.friendIDs()
+			friendLabels = make([]string, 0, len(friendIDs))
+			for _, id := range friendIDs {
+				friendLabels = append(friendLabels, state.friendLabel(id))
 			}
-		}
-		if invitesSection != nil {
-			if len(invitesData) == 0 {
-				invitesSection.Hide()
-			} else {
-				invitesSection.Show()
+			pendingIDs = state.pendingFriendIDs()
+			pendingLabels = make([]string, 0, len(pendingIDs))
+			for _, id := range pendingIDs {
+				pendingLabels = append(pendingLabels, state.friendLabel(id))
 			}
-		}
-		refreshChannels()
-		friendsList.Refresh()
-		pendingList.Refresh()
-		groupsList.Refresh()
-		invitesList.Refresh()
+			groupsData = state.groupNames()
+			invitesData = state.invites()
+			if selectedPending >= len(pendingIDs) {
+				selectedPending = -1
+			}
+			if selectedInvite >= len(invitesData) {
+				selectedInvite = -1
+			}
+			if selectedGroup == "" && len(groupsData) > 0 {
+				selectedGroup = groupsData[0]
+			}
+			if pendingSection != nil {
+				if len(pendingIDs) == 0 {
+					pendingSection.Hide()
+				} else {
+					pendingSection.Show()
+				}
+			}
+			if invitesSection != nil {
+				if len(invitesData) == 0 {
+					invitesSection.Hide()
+				} else {
+					invitesSection.Show()
+				}
+			}
+			refreshChannels()
+			friendsList.Refresh()
+			pendingList.Refresh()
+			groupsList.Refresh()
+			invitesList.Refresh()
+		})
 	}
 
 	sendBtn := widget.NewButton("Send", func() {
@@ -1887,7 +1908,7 @@ func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, 
 
 	addFriendBtn := widget.NewButton("Add", func() {
 		entry := widget.NewEntry()
-		entry.SetPlaceHolder("friend userID")
+		entry.SetPlaceHolder("friend user id")
 		form := dialog.NewForm("Friend Add", "Send", "Cancel", []*widget.FormItem{
 			widget.NewFormItem("User ID", entry),
 		}, func(ok bool) {
@@ -2024,7 +2045,7 @@ func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, 
 			return
 		}
 		target := widget.NewEntry()
-		target.SetPlaceHolder("friend userID")
+		target.SetPlaceHolder("friend user id")
 		form := dialog.NewForm("Invite To Group", "Invite", "Cancel", []*widget.FormItem{
 			widget.NewFormItem("User ID", target),
 			widget.NewFormItem("Group", widget.NewLabel(group)),
@@ -2413,7 +2434,11 @@ func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, 
 		body.SetMinRowsVisible(6)
 		body.SetText(strings.TrimSpace(prof.ProfileText))
 
-		meta := widget.NewLabel(fmt.Sprintf("login_id: %s\npresence: %s", dm, emptyDash(pres)))
+		displayID := userIDForLoginID(dm)
+		if displayID == "" {
+			displayID = dm
+		}
+		meta := widget.NewLabel(fmt.Sprintf("user_id: %s\npresence: %s", displayID, emptyDash(pres)))
 		meta.Wrapping = fyne.TextWrapWord
 
 		var img fyne.CanvasObject = widget.NewLabel("image: (none)")
@@ -2436,7 +2461,7 @@ func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, 
 			aliasEntry := widget.NewEntry()
 			aliasEntry.SetPlaceHolder("alias")
 			form := dialog.NewForm("Set Alias", "Save", "Cancel", []*widget.FormItem{
-				widget.NewFormItem("Login ID", widget.NewLabel(dm)),
+				widget.NewFormItem("User ID", widget.NewLabel(displayID)),
 				widget.NewFormItem("Alias", aliasEntry),
 			}, func(ok bool) {
 				if !ok {
@@ -2481,6 +2506,18 @@ func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, 
 		w.Close()
 		loginWindow.Show()
 	})
+	copyIDBtn := widget.NewButton("Copy ID", func() {
+		id := userIDForLoginID(ownLoginID)
+		if id == "" {
+			id = strings.TrimSpace(ownLoginID)
+		}
+		if id == "" {
+			appendInfo("user_id unavailable", infoEntry)
+			return
+		}
+		w.Clipboard().SetContent(id)
+		appendInfo("user_id copied to clipboard", infoEntry)
+	})
 
 	// --- UI layout (styled similar to client-web) ---
 	navMode := "friends"
@@ -2501,6 +2538,7 @@ func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, 
 
 	selfIdentity := container.NewHBox(widget.NewIcon(theme.AccountIcon()), selfLabel)
 	selfControls := container.NewHBox(
+		wrapControlBtn(theme.ContentCopyIcon(), func() { copyIDBtn.OnTapped() }),
 		wrapControlBtn(theme.AccountIcon(), func() { profileBtn.OnTapped() }),
 		wrapControlBtn(theme.VisibilityIcon(), func() { presenceBtn.OnTapped() }),
 		wrapControlBtn(theme.ConfirmIcon(), func() { e2eeBtn.OnTapped() }),
@@ -2653,7 +2691,11 @@ func showAppWindow(fy fyne.App, home string, serverAddr string, keyPath string, 
 	appendInfo("connected to "+serverAddr, infoEntry)
 	appendInfo("key file: "+keyPath, infoEntry)
 	if _, _, loginID := state.snapshotConn(); loginID != "" {
-		appendInfo("login_id: "+loginID, infoEntry)
+		displayID := userIDForLoginID(loginID)
+		if displayID == "" {
+			displayID = loginID
+		}
+		appendInfo("user_id: "+displayID, infoEntry)
 	}
 	appendInfo("display name: "+ownDisplayName, infoEntry)
 	if err := state.publishOwnProfile(); err != nil {
