@@ -601,7 +601,7 @@ function showShareToast() {
   }, 1800);
 }
 
-async function connectSelectedIdentity() {
+async function connectSelectedIdentity(passwordOverride = '') {
   if (!selectedSetupPath) {
     setupErr.textContent = 'Select an identity first.';
     return;
@@ -612,7 +612,7 @@ async function connectSelectedIdentity() {
   connectAbortController = new AbortController();
   const started = Date.now();
   try {
-    const password = requestPassphrase('Unlock identity for login');
+    const password = (passwordOverride || '').trim() || requestPassphrase('Unlock identity for login');
     if (password === null) {
       setConnectBusy(false);
       return;
@@ -660,7 +660,7 @@ async function createIdentityFromSetup() {
   selectedSetupPath = created.path || '';
   await refreshSetupUI();
   if (shouldConnect && selectedSetupPath) {
-    await connectSelectedIdentity();
+    await connectSelectedIdentity(password);
   }
 }
 

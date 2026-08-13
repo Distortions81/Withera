@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -245,5 +246,69 @@ func TestPublicGroupInviteCodeRoundTrip(t *testing.T) {
 	}
 	if parsed.Scope != "public_group" {
 		t.Fatalf("scope mismatch: got=%s", parsed.Scope)
+	}
+}
+
+func TestDMTargetsHidePendingFriendRequests(t *testing.T) {
+	pendingID := strings.Repeat("a", 64)
+	friendID := strings.Repeat("b", 64)
+	c := &webClient{
+		loginID:        strings.Repeat("c", 64),
+		contacts:       map[string]string{"pending": pendingID, "friend": friendID},
+		friends:        map[string]struct{}{friendID: {}},
+		pendingFriends: map[string]int64{pendingID: time.Now().Unix()},
+	}
+
+	targets := c.dmTargets()
+	if len(targets) != 1 {
+		t.Fatalf("expected one non-pending target, got %#v", targets)
+	}
+	if targets[0].ID != friendID {
+		t.Fatalf("unexpected target: got=%s want=%s", targets[0].ID, friendID)
+	}
+}
+
+func TestSaveProfilePersistsClearedFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "profile.json")
+	peerID := strings.Repeat("d", 64)
+	image := "data:image/png;base64,aGVsbG8="
+
+	if err := saveProfile(
+		path, "alice", "old bio", true, "", false,
+		map[string]string{},
+		map[string]string{peerID: "old peer bio"},
+		map[string]string{peerID: image},
+		map[string]string{peerID: profileImageChecksum(image)},
+		map[string]int64{peerID: time.Now().Unix()},
+	); err != nil {
+		t.Fatalf("seed profile failed: %v", err)
+	}
+
+	if err := saveProfile(
+		path, "alice", "", true, "", false,
+		map[string]string{},
+		map[string]string{peerID: ""},
+		map[string]string{peerID: ""},
+		map[string]string{peerID: ""},
+		map[string]int64{peerID: time.Now().Unix()},
+	); err != nil {
+		t.Fatalf("clear profile fields failed: %v", err)
+	}
+
+	_, profileText, _, _, peerProfiles, peerImages, peerChecksums, _, err := loadProfile(path)
+	if err != nil {
+		t.Fatalf("reload profile failed: %v", err)
+	}
+	if profileText != "" {
+		t.Fatalf("cleared profile text returned as %q", profileText)
+	}
+	if _, ok := peerProfiles[peerID]; ok {
+		t.Fatalf("cleared peer profile was restored: %#v", peerProfiles)
+	}
+	if _, ok := peerImages[peerID]; ok {
+		t.Fatalf("cleared peer image was restored: %#v", peerImages)
+	}
+	if _, ok := peerChecksums[peerID]; ok {
+		t.Fatalf("cleared peer checksum was restored: %#v", peerChecksums)
 	}
 }

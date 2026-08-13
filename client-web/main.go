@@ -347,6 +347,7 @@ type webClient struct {
 	peerE2EEMulti         map[string][]string
 	friendKeyNonces       map[string]map[string]int64
 	e2eeIssues            map[string]string
+	ownProfileSynced      bool
 
 	events  []webEvent
 	nextSeq int64
@@ -1117,13 +1118,13 @@ func (c *webClient) upsertNickname(loginID, nick string) {
 	peerSumCopy := cloneStringMap(c.peerImageChecksums)
 	refCopy := cloneInt64Map(c.profileRefreshed)
 	c.mu.Unlock()
-	_ = saveProfile(c.profilePath, displayName, profileText, "", false, nickCopy, peerCopy, peerImgCopy, peerSumCopy, refCopy)
+	_ = saveProfile(c.profilePath, displayName, profileText, false, "", false, nickCopy, peerCopy, peerImgCopy, peerSumCopy, refCopy)
 }
 
 func (c *webClient) upsertPeerProfile(loginID, text string) {
 	loginID = strings.TrimSpace(loginID)
 	text = strings.TrimSpace(text)
-	if !looksLikeLoginID(loginID) || text == "" {
+	if !looksLikeLoginID(loginID) {
 		return
 	}
 	c.mu.Lock()
@@ -1137,7 +1138,7 @@ func (c *webClient) upsertPeerProfile(loginID, text string) {
 	peerSumCopy := cloneStringMap(c.peerImageChecksums)
 	refCopy := cloneInt64Map(c.profileRefreshed)
 	c.mu.Unlock()
-	_ = saveProfile(c.profilePath, displayName, profileText, "", false, nickCopy, peerCopy, peerImgCopy, peerSumCopy, refCopy)
+	_ = saveProfile(c.profilePath, displayName, profileText, false, "", false, nickCopy, peerCopy, peerImgCopy, peerSumCopy, refCopy)
 }
 
 func (c *webClient) upsertPeerProfileImage(loginID, image string) {
@@ -1155,8 +1156,8 @@ func (c *webClient) upsertPeerProfileImage(loginID, image string) {
 	}
 	c.mu.Lock()
 	if image == "" {
-		delete(c.peerProfileImages, loginID)
-		delete(c.peerImageChecksums, loginID)
+		c.peerProfileImages[loginID] = ""
+		c.peerImageChecksums[loginID] = ""
 	} else {
 		c.peerProfileImages[loginID] = image
 		c.peerImageChecksums[loginID] = profileImageChecksum(image)
@@ -1170,7 +1171,7 @@ func (c *webClient) upsertPeerProfileImage(loginID, image string) {
 	peerSumCopy := cloneStringMap(c.peerImageChecksums)
 	refCopy := cloneInt64Map(c.profileRefreshed)
 	c.mu.Unlock()
-	_ = saveProfile(c.profilePath, displayName, profileText, "", false, nickCopy, peerCopy, peerImgCopy, peerSumCopy, refCopy)
+	_ = saveProfile(c.profilePath, displayName, profileText, false, "", false, nickCopy, peerCopy, peerImgCopy, peerSumCopy, refCopy)
 }
 
 func (c *webClient) applyOwnProfileFromServer(payload profilePayload) {
@@ -1196,7 +1197,7 @@ func (c *webClient) applyOwnProfileFromServer(payload profilePayload) {
 	refCopy := cloneInt64Map(c.profileRefreshed)
 	c.mu.Unlock()
 
-	_ = saveProfile(c.profilePath, displayName, text, image, true, nickCopy, peerCopy, peerImgCopy, peerSumCopy, refCopy)
+	_ = saveProfile(c.profilePath, displayName, text, true, image, true, nickCopy, peerCopy, peerImgCopy, peerSumCopy, refCopy)
 }
 
 func (c *webClient) applyGroupProfileFromServer(payload groupProfilePayload) {
@@ -1493,7 +1494,6 @@ func (c *webClient) networkLoop(ch <-chan netMsg) {
 		case "friend_request":
 			if p.To == c.loginID && looksLikeLoginID(p.From) {
 				c.setPresence(p.From, "online", defaultPresenceTTLSec)
-				c.ensureContact(p.From)
 				c.mu.Lock()
 				c.pendingFriends[p.From] = time.Now().Unix()
 				c.mu.Unlock()
@@ -1639,6 +1639,9 @@ func (c *webClient) networkLoop(ch <-chan netMsg) {
 				continue
 			}
 			if strings.TrimSpace(p.From) == c.loginID {
+				c.mu.Lock()
+				c.ownProfileSynced = true
+				c.mu.Unlock()
 				c.applyOwnProfileFromServer(prof)
 				c.addEvent("info", "profile synced from server")
 				continue
@@ -1648,9 +1651,7 @@ func (c *webClient) networkLoop(ch <-chan netMsg) {
 				c.upsertNickname(p.From, nick)
 			}
 			text := strings.TrimSpace(prof.ProfileText)
-			if text != "" {
-				c.upsertPeerProfile(p.From, text)
-			}
+			c.upsertPeerProfile(p.From, text)
 			c.upsertPeerProfileImage(p.From, prof.ProfileImage)
 			c.mu.Lock()
 			delete(c.profileRequested, strings.TrimSpace(p.From))
@@ -1866,6 +1867,9 @@ func (c *webClient) dmTargets() []dmTarget {
 		if looksLikeLoginID(id) && id != c.loginID {
 			set[id] = struct{}{}
 		}
+	}
+	for id := range c.pendingFriends {
+		delete(set, id)
 	}
 	ids := make([]string, 0, len(set))
 	for id := range set {
@@ -2755,7 +2759,7 @@ func (c *webClient) handleProfileSet(w http.ResponseWriter, r *http.Request) {
 	refs := cloneInt64Map(c.profileRefreshed)
 	profileImage := c.profileImage
 	c.mu.Unlock()
-	if err := saveProfile(c.profilePath, name, text, profileImage, req.ProfileImageSet, nicks, peers, peerImgs, peerSums, refs); err != nil {
+	if err := saveProfile(c.profilePath, name, text, true, profileImage, req.ProfileImageSet, nicks, peers, peerImgs, peerSums, refs); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
@@ -3154,7 +3158,7 @@ func loadProfile(path string) (string, string, string, map[string]string, map[st
 	return strings.TrimSpace(f.DisplayName), strings.TrimSpace(f.ProfileText), strings.TrimSpace(f.ProfileImage), nicks, peers, peerImages, peerChecksums, refs, nil
 }
 
-func saveProfile(path string, displayName string, profileText string, profileImage string, profileImageSet bool, nicknames map[string]string, peerProfiles map[string]string, peerProfileImages map[string]string, peerImageChecksums map[string]string, refreshed map[string]int64) error {
+func saveProfile(path string, displayName string, profileText string, profileTextSet bool, profileImage string, profileImageSet bool, nicknames map[string]string, peerProfiles map[string]string, peerProfileImages map[string]string, peerImageChecksums map[string]string, refreshed map[string]int64) error {
 	existingName, existingText, existingImage, existingNicks, existingPeers, existingPeerImages, existingChecksums, existingRefs, err := loadProfile(path)
 	if err != nil {
 		return err
@@ -3164,28 +3168,44 @@ func saveProfile(path string, displayName string, profileText string, profileIma
 		mergedNicks[id] = nick
 	}
 	for id, nick := range nicknames {
-		mergedNicks[id] = nick
+		if strings.TrimSpace(nick) == "" {
+			delete(mergedNicks, id)
+		} else {
+			mergedNicks[id] = nick
+		}
 	}
 	mergedPeers := make(map[string]string, len(existingPeers)+len(peerProfiles))
 	for id, text := range existingPeers {
 		mergedPeers[id] = text
 	}
 	for id, text := range peerProfiles {
-		mergedPeers[id] = text
+		if strings.TrimSpace(text) == "" {
+			delete(mergedPeers, id)
+		} else {
+			mergedPeers[id] = text
+		}
 	}
 	mergedPeerImages := make(map[string]string, len(existingPeerImages)+len(peerProfileImages))
 	for id, img := range existingPeerImages {
 		mergedPeerImages[id] = img
 	}
 	for id, img := range peerProfileImages {
-		mergedPeerImages[id] = img
+		if strings.TrimSpace(img) == "" {
+			delete(mergedPeerImages, id)
+		} else {
+			mergedPeerImages[id] = img
+		}
 	}
 	mergedChecksums := make(map[string]string, len(existingChecksums)+len(peerImageChecksums))
 	for id, sum := range existingChecksums {
 		mergedChecksums[id] = sum
 	}
 	for id, sum := range peerImageChecksums {
-		mergedChecksums[id] = sum
+		if strings.TrimSpace(sum) == "" {
+			delete(mergedChecksums, id)
+		} else {
+			mergedChecksums[id] = sum
+		}
 	}
 	mergedRefs := make(map[string]int64, len(existingRefs)+len(refreshed))
 	for id, ts := range existingRefs {
@@ -3201,7 +3221,7 @@ func saveProfile(path string, displayName string, profileText string, profileIma
 		name = strings.TrimSpace(existingName)
 	}
 	text := strings.TrimSpace(profileText)
-	if text == "" {
+	if !profileTextSet {
 		text = strings.TrimSpace(existingText)
 	}
 	image := strings.TrimSpace(existingImage)
@@ -3969,9 +3989,10 @@ func newWebClientForIdentity(serverAddr string, home string, keyPath string, con
 		_ = conn.Close()
 		return nil, fmt.Errorf("ui state load failed: %w", err)
 	}
-	if strings.TrimSpace(displayName) == "" {
+	needsInitialProfilePublish := strings.TrimSpace(displayName) == ""
+	if needsInitialProfilePublish {
 		displayName = defaultDisplayName()
-		if err := saveProfile(profilePath, displayName, profileText, profileImage, false, nicknames, peerProfiles, peerProfileImages, peerImageChecksums, profileRefreshed); err != nil {
+		if err := saveProfile(profilePath, displayName, profileText, false, profileImage, false, nicknames, peerProfiles, peerProfileImages, peerImageChecksums, profileRefreshed); err != nil {
 			_ = conn.Close()
 			return nil, fmt.Errorf("profile save failed: %w", err)
 		}
@@ -4088,6 +4109,25 @@ func newWebClientForIdentity(serverAddr string, home string, keyPath string, con
 	}
 
 	go client.networkLoop(events)
+	if needsInitialProfilePublish {
+		go func() {
+			timer := time.NewTimer(1500 * time.Millisecond)
+			defer timer.Stop()
+			select {
+			case <-client.stopCh:
+				return
+			case <-timer.C:
+			}
+			client.mu.Lock()
+			synced := client.ownProfileSynced
+			client.mu.Unlock()
+			if !synced {
+				if err := client.publishOwnProfile(); err != nil {
+					client.addEvent("info", "initial profile publish failed: "+err.Error())
+				}
+			}
+		}()
+	}
 	go func() {
 		keepaliveTicker := time.NewTicker(presenceKeepaliveInterval)
 		refreshTicker := time.NewTicker(presenceRefreshInterval)
