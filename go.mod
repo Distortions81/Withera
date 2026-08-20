@@ -1,8 +1,8 @@
 module withera
 
-go 1.24.2
+go 1.26.6
+toolchain go1.26.6
 
-toolchain go1.24.13
 
 require (
 	filippo.io/age v1.3.1
