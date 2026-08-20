@@ -7,7 +7,7 @@ toolchain go1.26.6
 require (
 	filippo.io/age v1.3.1
 	fyne.io/fyne/v2 v2.7.2
-	github.com/BurntSushi/toml v1.5.0
+	github.com/BurntSushi/toml v1.6.0
 	github.com/charmbracelet/bubbles v0.18.0
 	github.com/charmbracelet/bubbletea v0.25.0
 	github.com/charmbracelet/lipgloss v0.10.0
